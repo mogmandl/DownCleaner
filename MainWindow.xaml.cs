@@ -10,8 +10,19 @@ namespace FileCleaner;
 public partial class MainWindow : Window
 {
     private MainViewModel VM => (MainViewModel)DataContext;
+    private bool _isPreviewViewportDragging;
+    private System.Windows.Point _lastPreviewViewportPoint;
 
-    public MainWindow() => InitializeComponent();
+    public MainWindow()
+        : this(new MainViewModel())
+    {
+    }
+
+    public MainWindow(MainViewModel viewModel)
+    {
+        InitializeComponent();
+        DataContext = viewModel;
+    }
 
     private async void FolderTreeView_SelectedItemChanged(
         object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -79,5 +90,50 @@ public partial class MainWindow : Window
         {
             Debug.WriteLine($"Tab selection error: {ex}");
         }
+    }
+
+    private void PreviewViewport_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement previewSurface || e.ChangedButton != MouseButton.Left)
+            return;
+
+        _isPreviewViewportDragging = true;
+        _lastPreviewViewportPoint = e.GetPosition(previewSurface);
+        previewSurface.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void PreviewViewport_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_isPreviewViewportDragging || sender is not FrameworkElement previewSurface)
+            return;
+
+        var current = e.GetPosition(previewSurface);
+        VM.RotatePreviewModel(
+            current.X - _lastPreviewViewportPoint.X,
+            current.Y - _lastPreviewViewportPoint.Y);
+        _lastPreviewViewportPoint = current;
+        e.Handled = true;
+    }
+
+    private void PreviewViewport_MouseUp(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (sender is not FrameworkElement previewSurface)
+            return;
+
+        _isPreviewViewportDragging = false;
+        previewSurface.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void PreviewViewport_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        VM.ZoomPreviewModel(e.Delta);
+        e.Handled = true;
+    }
+
+    private void ResetPreviewCamera_Click(object sender, RoutedEventArgs e)
+    {
+        VM.ResetPreviewCamera();
     }
 }

@@ -38,16 +38,22 @@ public class MainViewModel : INotifyPropertyChanged
 
     private AppSettings _settings;
     private RecommendationProfile _recommendationProfile;
+    private readonly Dictionary<string, List<FileItem>> _preloadedScans = new(StringComparer.OrdinalIgnoreCase);
     private FileItem? _selectedFile;
     private CleanupNode? _selectedCleanupNode;
     private FolderNode? _selectedFavoriteFolder;
     private ImageSource? _previewImage;
     private string _previewText = "";
     private Model3DGroup? _previewModel;
+    private Point3D _previewCameraPosition = new(0, 0, 6);
+    private Vector3D _previewCameraLookDirection = new(0, 0, -6);
     private bool _isPreviewAvailable;
     private bool _isTextPreviewAvailable;
     private bool _isModelPreviewAvailable;
     private string _previewMessage = "이미지 파일을 선택하면 미리보기를 확인할 수 있습니다.";
+    private double _previewYaw = 35;
+    private double _previewPitch = 20;
+    private double _previewDistance = 6;
 
     public ObservableCollection<FolderNode> RootNodes { get; } = new();
     public ObservableCollection<FolderNode> FavoriteFolders { get; } = new();
@@ -150,6 +156,18 @@ public class MainViewModel : INotifyPropertyChanged
     {
         get => _previewModel;
         set { _previewModel = value; OnPropertyChanged(); }
+    }
+
+    public Point3D PreviewCameraPosition
+    {
+        get => _previewCameraPosition;
+        set { _previewCameraPosition = value; OnPropertyChanged(); }
+    }
+
+    public Vector3D PreviewCameraLookDirection
+    {
+        get => _previewCameraLookDirection;
+        set { _previewCameraLookDirection = value; OnPropertyChanged(); }
     }
 
     public bool IsModelPreviewAvailable
@@ -324,6 +342,48 @@ public class MainViewModel : INotifyPropertyChanged
         StatusMessage = "새로고침 완료";
     }
 
+    public async Task PreloadFavoriteFoldersAsync(IProgress<string>? progress = null, CancellationToken ct = default)
+    {
+        if (FavoriteFolders.Count == 0)
+            return;
+
+        _preloadedScans.Clear();
+        progress?.Report($"시작 준비 중... 즐겨찾기 폴더 {FavoriteFolders.Count}개 분석 준비");
+
+        for (var i = 0; i < FavoriteFolders.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var folder = FavoriteFolders[i];
+            if (string.IsNullOrWhiteSpace(folder.FullPath) || !Directory.Exists(folder.FullPath))
+                continue;
+
+            try
+            {
+                progress?.Report($"사전 분석 중 ({i + 1}/{FavoriteFolders.Count}): {folder.Name}");
+                var scanProgress = new Progress<string>(message => progress?.Report($"{folder.Name}: {message}"));
+                var files = Settings.DefaultScanMode == "Detailed"
+                    ? await FileScanner.ScanFilesAsync(folder.FullPath, true, scanProgress, ct)
+                    : Settings.DefaultScanMode == "Quick"
+                        ? await FileScanner.ScanFilesAsync(folder.FullPath, false, scanProgress, ct)
+                        : await FileScanner.ScanSmartForCleanupAsync(folder.FullPath, scanProgress, ct);
+
+                ApplyLearnedRecommendations(files);
+                _preloadedScans[folder.FullPath] = files;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ErrorLogService.LogException($"Preload {folder.Name}", ex);
+            }
+        }
+
+        progress?.Report("시작 준비 완료");
+    }
+
     private void LoadDriveInfo()
     {
         DriveInfoList.Clear();
@@ -429,6 +489,20 @@ public class MainViewModel : INotifyPropertyChanged
 
     public async Task LoadFilesForFolderAsync(FolderNode node)
     {
+        if (_preloadedScans.TryGetValue(node.FullPath, out var cachedFiles))
+        {
+            ResetScanCollections();
+            ResetSelectionDetails();
+            _currentScanRootPath = node.FullPath;
+            _currentScanRootName = node.Name;
+
+            var cleanupRoot = BuildCleanupTree(node.Name, node.FullPath, cachedFiles, CancellationToken.None);
+            ApplyScanResults(cachedFiles, cleanupRoot);
+            StatusMessage = $"사전 분석 결과 로드: {cachedFiles.Count}개 파일 | 총 {Fmt(cachedFiles.Sum(file => file.FileSize))}";
+            OperationDetail = "시작 시 준비한 분석 결과를 사용했습니다.";
+            return;
+        }
+
         var operationId = BeginOperation($"'{node.Name}' 스캔 중...", indeterminate: true);
         ResetScanCollections();
         _currentScanRootPath = node.FullPath;
@@ -916,6 +990,34 @@ public class MainViewModel : INotifyPropertyChanged
     public void SetSelectedCleanupNode(CleanupNode? node)
         => SelectedCleanupNode = node;
 
+    public void RotatePreviewModel(double deltaX, double deltaY)
+    {
+        if (!IsModelPreviewAvailable)
+            return;
+
+        _previewYaw += deltaX * 0.45;
+        _previewPitch = Math.Clamp(_previewPitch - deltaY * 0.45, -80, 80);
+        UpdatePreviewCamera();
+    }
+
+    public void ZoomPreviewModel(double wheelDelta)
+    {
+        if (!IsModelPreviewAvailable)
+            return;
+
+        var factor = wheelDelta > 0 ? 0.88 : 1.12;
+        _previewDistance = Math.Clamp(_previewDistance * factor, 1.5, 30);
+        UpdatePreviewCamera();
+    }
+
+    public void ResetPreviewCamera()
+    {
+        _previewYaw = 35;
+        _previewPitch = 20;
+        _previewDistance = 6;
+        UpdatePreviewCamera();
+    }
+
     private void ResetScanCollections()
     {
         ReplaceCurrentFiles(Array.Empty<FileItem>());
@@ -1147,11 +1249,12 @@ public class MainViewModel : INotifyPropertyChanged
 
         if (SelectedFile == null)
         {
-            PreviewMessage = "이미지 파일, 텍스트 파일, OBJ 3D 파일을 선택하면 미리보기를 확인할 수 있습니다.";
+            PreviewMessage = "이미지 파일, 텍스트 파일, OBJ/STL 3D 파일을 선택하면 미리보기를 확인할 수 있습니다.";
             return;
         }
 
         var ext = Path.GetExtension(SelectedFile.FilePath).ToLowerInvariant();
+        var fileName = Path.GetFileName(SelectedFile.FilePath);
         if (!File.Exists(SelectedFile.FilePath))
         {
             PreviewMessage = "파일을 찾을 수 없습니다.";
@@ -1166,12 +1269,6 @@ public class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
-            if (IsTextExtension(ext))
-            {
-                LoadTextPreview(SelectedFile.FilePath);
-                return;
-            }
-
             if (ext == ".obj")
             {
                 LoadObjPreview(SelectedFile.FilePath);
@@ -1181,6 +1278,12 @@ public class MainViewModel : INotifyPropertyChanged
             if (ext == ".stl")
             {
                 LoadStlPreview(SelectedFile.FilePath);
+                return;
+            }
+
+            if (IsTextLikeFile(SelectedFile.FilePath, fileName, ext))
+            {
+                LoadTextPreview(SelectedFile.FilePath);
                 return;
             }
 
@@ -1257,6 +1360,7 @@ public class MainViewModel : INotifyPropertyChanged
 
         PreviewModel = model;
         IsModelPreviewAvailable = true;
+        ResetPreviewCamera();
     }
 
     private void LoadStlPreview(string path)
@@ -1270,6 +1374,7 @@ public class MainViewModel : INotifyPropertyChanged
 
         PreviewModel = model;
         IsModelPreviewAvailable = true;
+        ResetPreviewCamera();
     }
 
     private static Model3DGroup CreateObjModel(string path)
@@ -1484,13 +1589,85 @@ public class MainViewModel : INotifyPropertyChanged
     private static bool IsImageExtension(string ext)
         => new[] { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp" }.Contains(ext);
 
+    private void UpdatePreviewCamera()
+    {
+        var yaw = _previewYaw * Math.PI / 180;
+        var pitch = _previewPitch * Math.PI / 180;
+        var cosPitch = Math.Cos(pitch);
+
+        var x = _previewDistance * cosPitch * Math.Sin(yaw);
+        var y = _previewDistance * Math.Sin(pitch);
+        var z = _previewDistance * cosPitch * Math.Cos(yaw);
+
+        PreviewCameraPosition = new Point3D(x, y, z);
+        PreviewCameraLookDirection = new Vector3D(-x, -y, -z);
+    }
+
+    private static bool IsTextLikeFile(string path, string fileName, string ext)
+    {
+        if (IsTextExtension(ext) || IsTextFileName(fileName))
+            return true;
+
+        return IsLikelyTextContent(path);
+    }
+
     private static bool IsTextExtension(string ext)
-        => new[]
+        => new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             ".txt", ".log", ".md", ".json", ".xml", ".csv", ".ini", ".cfg", ".config",
-            ".cs", ".xaml", ".js", ".ts", ".html", ".css", ".py", ".java", ".cpp", ".h",
-            ".sql", ".ps1", ".bat", ".cmd", ".yaml", ".yml"
+            ".cs", ".xaml", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".scss", ".sass",
+            ".py", ".java", ".cpp", ".c", ".h", ".hpp", ".rs", ".go", ".php", ".rb", ".swift",
+            ".sql", ".ps1", ".bat", ".cmd", ".yaml", ".yml", ".toml", ".lock", ".env",
+            ".editorconfig", ".gitignore", ".gitattributes", ".dockerignore", ".npmrc"
         }.Contains(ext);
+
+    private static bool IsTextFileName(string fileName)
+    {
+        var knownNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".env", ".gitignore", ".gitattributes", ".dockerignore", ".editorconfig",
+            ".npmrc", ".yarnrc", "Dockerfile", "Makefile", "README", "LICENSE"
+        };
+
+        return knownNames.Contains(fileName)
+            || fileName.StartsWith(".env.", StringComparison.OrdinalIgnoreCase)
+            || fileName.EndsWith(".env", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLikelyTextContent(string path)
+    {
+        const int sampleSize = 4096;
+
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Length > 5_000_000)
+                return false;
+
+            using var stream = File.OpenRead(path);
+            var buffer = new byte[Math.Min(sampleSize, Math.Max(0, (int)info.Length))];
+            var read = stream.Read(buffer, 0, buffer.Length);
+            if (read == 0)
+                return true;
+
+            var suspicious = 0;
+            for (var i = 0; i < read; i++)
+            {
+                var b = buffer[i];
+                if (b == 0)
+                    return false;
+
+                if (b < 32 && b is not 9 and not 10 and not 13)
+                    suspicious++;
+            }
+
+            return (double)suspicious / read < 0.05;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static bool IsKnown3DExtension(string ext)
         => new[] { ".fbx", ".dae", ".gltf", ".glb", ".3ds", ".ply", ".blend" }.Contains(ext);

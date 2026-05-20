@@ -2,6 +2,7 @@
 using System.Windows;
 using System.Windows.Threading;
 using FileCleaner.Services;
+using FileCleaner.ViewModels;
 
 namespace FileCleaner;
 
@@ -13,6 +14,32 @@ public partial class App : System.Windows.Application
     {
         DispatcherUnhandledException += App_DispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+    }
+
+    protected override async void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+
+        var loadingWindow = new LoadingWindow();
+        loadingWindow.Show();
+
+        var viewModel = new MainViewModel();
+        try
+        {
+            var progress = new Progress<string>(loadingWindow.SetStatus);
+            await viewModel.PreloadFavoriteFoldersAsync(progress);
+        }
+        catch (Exception ex)
+        {
+            ErrorLogService.LogException("Startup Preload", ex);
+            loadingWindow.SetStatus("사전 분석 중 오류가 발생했습니다. 기본 화면을 엽니다.");
+            await System.Threading.Tasks.Task.Delay(600);
+        }
+
+        var mainWindow = new MainWindow(viewModel);
+        MainWindow = mainWindow;
+        mainWindow.Show();
+        loadingWindow.Close();
     }
 
     private void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

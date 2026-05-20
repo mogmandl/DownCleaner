@@ -8,10 +8,6 @@
         Width="1280"
         WindowStartupLocation="CenterScreen">
 
-    <Window.DataContext>
-        <vm:MainViewModel/>
-    </Window.DataContext>
-
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -225,17 +221,33 @@
                                                          AcceptsReturn="True"
                                                          AcceptsTab="True"/>
                                             </ScrollViewer>
-                                            <Viewport3D Visibility="{Binding IsModelPreviewAvailable, Converter={StaticResource BoolToVis}}">
-                                                <Viewport3D.Camera>
-                                                    <PerspectiveCamera Position="0,0,6"
-                                                                       LookDirection="0,0,-6"
-                                                                       UpDirection="0,1,0"
-                                                                       FieldOfView="45"/>
-                                                </Viewport3D.Camera>
-                                                <ModelVisual3D Content="{Binding PreviewModel}"/>
-                                            </Viewport3D>
+                                            <Border Background="Transparent"
+                                                    Visibility="{Binding IsModelPreviewAvailable, Converter={StaticResource BoolToVis}}"
+                                                    MouseDown="PreviewViewport_MouseDown"
+                                                    MouseMove="PreviewViewport_MouseMove"
+                                                    MouseUp="PreviewViewport_MouseUp"
+                                                    MouseLeave="PreviewViewport_MouseUp"
+                                                    MouseWheel="PreviewViewport_MouseWheel">
+                                                <Viewport3D>
+                                                    <Viewport3D.Camera>
+                                                        <PerspectiveCamera Position="{Binding PreviewCameraPosition}"
+                                                                           LookDirection="{Binding PreviewCameraLookDirection}"
+                                                                           UpDirection="0,1,0"
+                                                                           FieldOfView="45"/>
+                                                    </Viewport3D.Camera>
+                                                    <ModelVisual3D Content="{Binding PreviewModel}"/>
+                                                </Viewport3D>
+                                            </Border>
+                                            <Button Content="시점 초기화"
+                                                    Padding="6,3"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Top"
+                                                    Margin="0,4,4,0"
+                                                    Click="ResetPreviewCamera_Click"
+                                                    Visibility="{Binding IsModelPreviewAvailable, Converter={StaticResource BoolToVis}}"/>
                                             <TextBlock Text="{Binding PreviewMessage}"
                                                        Foreground="#555"
+                                                       IsHitTestVisible="False"
                                                        TextWrapping="Wrap"
                                                        TextAlignment="Center"
                                                        VerticalAlignment="Center"
@@ -394,17 +406,33 @@
                                                      AcceptsReturn="True"
                                                      AcceptsTab="True"/>
                                         </ScrollViewer>
-                                        <Viewport3D Visibility="{Binding IsModelPreviewAvailable, Converter={StaticResource BoolToVis}}">
-                                            <Viewport3D.Camera>
-                                                <PerspectiveCamera Position="0,0,6"
-                                                                   LookDirection="0,0,-6"
-                                                                   UpDirection="0,1,0"
-                                                                   FieldOfView="45"/>
-                                            </Viewport3D.Camera>
-                                            <ModelVisual3D Content="{Binding PreviewModel}"/>
-                                        </Viewport3D>
+                                        <Border Background="Transparent"
+                                                Visibility="{Binding IsModelPreviewAvailable, Converter={StaticResource BoolToVis}}"
+                                                MouseDown="PreviewViewport_MouseDown"
+                                                MouseMove="PreviewViewport_MouseMove"
+                                                MouseUp="PreviewViewport_MouseUp"
+                                                MouseLeave="PreviewViewport_MouseUp"
+                                                MouseWheel="PreviewViewport_MouseWheel">
+                                            <Viewport3D>
+                                                <Viewport3D.Camera>
+                                                    <PerspectiveCamera Position="{Binding PreviewCameraPosition}"
+                                                                       LookDirection="{Binding PreviewCameraLookDirection}"
+                                                                       UpDirection="0,1,0"
+                                                                       FieldOfView="45"/>
+                                                </Viewport3D.Camera>
+                                                <ModelVisual3D Content="{Binding PreviewModel}"/>
+                                            </Viewport3D>
+                                        </Border>
+                                        <Button Content="시점 초기화"
+                                                Padding="6,3"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Top"
+                                                Margin="0,4,4,0"
+                                                Click="ResetPreviewCamera_Click"
+                                                Visibility="{Binding IsModelPreviewAvailable, Converter={StaticResource BoolToVis}}"/>
                                         <TextBlock Text="{Binding PreviewMessage}"
                                                    Foreground="#555"
+                                                   IsHitTestVisible="False"
                                                    TextWrapping="Wrap"
                                                    TextAlignment="Center"
                                                    VerticalAlignment="Center"
