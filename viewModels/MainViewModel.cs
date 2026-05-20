@@ -1,0 +1,1555 @@
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.IO;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using FileCleaner.Helpers;
+using FileCleaner.Models;
+using FileCleaner.Services;
+using Brush = System.Windows.Media.Brush;
+using Color = System.Windows.Media.Color;
+using SolidColorBrush = System.Windows.Media.SolidColorBrush;
+
+namespace FileCleaner.ViewModels;
+
+public class MainViewModel : INotifyPropertyChanged
+{
+    private string _status = "폴더를 선택하거나 추가하세요.";
+    private string _operationDetail = "";
+    private bool _isScanning;
+    private bool _isProgressIndeterminate = true;
+    private double _scanProgress;
+    private string _selectedInfo = "";
+    private CancellationTokenSource? _cts;
+    private string _currentScanRootPath = "";
+    private string _currentScanRootName = "";
+    private int _selectedFileRefreshVersion;
+    private int _activeOperationId;
+    private bool _suspendSelectionInfoRefresh;
+    private bool _selectionInfoRefreshPending;
+    private bool _selectionInfoRefreshQueued;
+    private bool _suspendDeleteListRefresh;
+
+    private AppSettings _settings;
+    private RecommendationProfile _recommendationProfile;
+    private FileItem? _selectedFile;
+    private CleanupNode? _selectedCleanupNode;
+    private FolderNode? _selectedFavoriteFolder;
+    private ImageSource? _previewImage;
+    private string _previewText = "";
+    private Model3DGroup? _previewModel;
+    private bool _isPreviewAvailable;
+    private bool _isTextPreviewAvailable;
+    private bool _isModelPreviewAvailable;
+    private string _previewMessage = "이미지 파일을 선택하면 미리보기를 확인할 수 있습니다.";
+
+    public ObservableCollection<FolderNode> RootNodes { get; } = new();
+    public ObservableCollection<FolderNode> FavoriteFolders { get; } = new();
+    public BulkObservableCollection<FileItem> CurrentFiles { get; } = new();
+    public BulkObservableCollection<CleanupNode> CurrentCleanupNodes { get; } = new();
+    public BulkObservableCollection<CleanupNode> DeleteListNodes { get; } = new();
+    public ObservableCollection<FileItem> DeleteList { get; } = new();
+    public ObservableCollection<DriveItem> DriveInfoList { get; } = new();
+    public ObservableCollection<StorageItem> StorageItems { get; } = new();
+    public ObservableCollection<ChartItem> DriveChartItems { get; } = new();
+    public ObservableCollection<ChartItem> RiskDistributionItems { get; } = new();
+    public ObservableCollection<ErrorHistoryItem> RecentErrors { get; } = new();
+    public IReadOnlyList<string> ScanModes { get; } = new[] { "Smart", "Detailed", "Quick" };
+
+    public AppSettings Settings
+    {
+        get => _settings;
+        private set
+        {
+            if (_settings == value) return;
+            if (_settings != null)
+                _settings.PropertyChanged -= Settings_PropertyChanged;
+
+            _settings = value;
+            _settings.PropertyChanged += Settings_PropertyChanged;
+            OnPropertyChanged();
+        }
+    }
+
+    public FileItem? SelectedFile
+    {
+        get => _selectedFile;
+        set
+        {
+            if (_selectedFile == value) return;
+            _selectedFile = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(SelectedEntryInfo));
+            OnPropertyChanged(nameof(SelectedEntryDetail));
+            UpdatePreview();
+            _ = RefreshSelectedFileMetadataAsync(value, ++_selectedFileRefreshVersion);
+        }
+    }
+
+    public CleanupNode? SelectedCleanupNode
+    {
+        get => _selectedCleanupNode;
+        set
+        {
+            if (_selectedCleanupNode == value) return;
+            _selectedCleanupNode = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(SelectedEntryName));
+            OnPropertyChanged(nameof(SelectedEntryPath));
+            OnPropertyChanged(nameof(SelectedEntryInfo));
+            OnPropertyChanged(nameof(SelectedEntryDetail));
+
+            SelectedFile = value is { IsFolder: false, File: not null } ? value.File : null;
+            if (value?.IsFolder == true)
+                UpdatePreview();
+        }
+    }
+
+    public FolderNode? SelectedFavoriteFolder
+    {
+        get => _selectedFavoriteFolder;
+        set
+        {
+            if (_selectedFavoriteFolder == value) return;
+            _selectedFavoriteFolder = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public ImageSource? PreviewImage
+    {
+        get => _previewImage;
+        set { _previewImage = value; OnPropertyChanged(); }
+    }
+
+    public bool IsPreviewAvailable
+    {
+        get => _isPreviewAvailable;
+        set { _isPreviewAvailable = value; OnPropertyChanged(); }
+    }
+
+    public string PreviewText
+    {
+        get => _previewText;
+        set { _previewText = value; OnPropertyChanged(); }
+    }
+
+    public bool IsTextPreviewAvailable
+    {
+        get => _isTextPreviewAvailable;
+        set { _isTextPreviewAvailable = value; OnPropertyChanged(); }
+    }
+
+    public Model3DGroup? PreviewModel
+    {
+        get => _previewModel;
+        set { _previewModel = value; OnPropertyChanged(); }
+    }
+
+    public bool IsModelPreviewAvailable
+    {
+        get => _isModelPreviewAvailable;
+        set { _isModelPreviewAvailable = value; OnPropertyChanged(); }
+    }
+
+    public string PreviewMessage
+    {
+        get => _previewMessage;
+        set { _previewMessage = value; OnPropertyChanged(); }
+    }
+
+    public string StatusMessage
+    {
+        get => _status;
+        set { _status = value; OnPropertyChanged(); }
+    }
+
+    public string OperationDetail
+    {
+        get => _operationDetail;
+        set { _operationDetail = value; OnPropertyChanged(); }
+    }
+
+    public bool IsScanning
+    {
+        get => _isScanning;
+        set { _isScanning = value; OnPropertyChanged(); }
+    }
+
+    public bool IsProgressIndeterminate
+    {
+        get => _isProgressIndeterminate;
+        set { _isProgressIndeterminate = value; OnPropertyChanged(); }
+    }
+
+    public double ScanProgress
+    {
+        get => _scanProgress;
+        set { _scanProgress = Math.Clamp(value, 0, 100); OnPropertyChanged(); }
+    }
+
+    public string SelectedInfo
+    {
+        get => _selectedInfo;
+        set { _selectedInfo = value; OnPropertyChanged(); }
+    }
+
+    public string DeleteListSummary =>
+        $"삭제 목록: {DeleteList.Count}개 | 확보 가능 {Fmt(DeleteList.Sum(f => f.FileSize))}";
+
+    public string SelectedEntryName => SelectedCleanupNode?.Name ?? "항목을 선택하세요";
+    public string SelectedEntryPath => SelectedCleanupNode?.FullPath ?? "";
+
+    public string SelectedEntryInfo
+    {
+        get
+        {
+            if (SelectedCleanupNode == null)
+                return "";
+
+            if (SelectedCleanupNode.IsFolder)
+                return $"폴더 | {SelectedCleanupNode.DetailText} | {SelectedCleanupNode.SizeDisplay}";
+
+            return SelectedFile == null
+                ? ""
+                : $"{SelectedFile.FileSizeDisplay} | {SelectedFile.RiskLevel} | {SelectedFile.AssociatedProgram}";
+        }
+    }
+
+    public string SelectedEntryDetail
+    {
+        get
+        {
+            if (SelectedCleanupNode == null)
+                return "";
+
+            return SelectedCleanupNode.IsFolder
+                ? "폴더를 체크하면 하위 폴더와 파일이 함께 선택됩니다. 필요한 항목은 개별 해제할 수 있습니다."
+                : SelectedFile?.RiskReason ?? "";
+        }
+    }
+
+    public ICommand AddFolderCommand { get; }
+    public ICommand RefreshCommand { get; }
+    public ICommand SelectAllCommand { get; }
+    public ICommand SelectDangerousCommand { get; }
+    public ICommand DeselectAllCommand { get; }
+    public ICommand AddToDeleteListCommand { get; }
+    public ICommand AutoCollectCandidatesCommand { get; }
+    public ICommand ClearDeleteListCommand { get; }
+    public ICommand DeleteSelectedCommand { get; }
+    public ICommand AnalyzeStorageCommand { get; }
+    public ICommand SaveSettingsCommand { get; }
+    public ICommand ReloadSettingsCommand { get; }
+    public ICommand RefreshErrorsCommand { get; }
+
+    public MainViewModel()
+    {
+        _settings = SettingsService.Load();
+        _settings.PropertyChanged += Settings_PropertyChanged;
+        _recommendationProfile = RecommendationProfileService.Load();
+
+        AddFolderCommand = new AsyncRelayCommand(AddFolderAsync);
+        RefreshCommand = new RelayCommand(Refresh);
+        SelectAllCommand = new RelayCommand(() => SetAll(true));
+        DeselectAllCommand = new RelayCommand(() => SetAll(false));
+        SelectDangerousCommand = new RelayCommand(SelectDangerous);
+        AddToDeleteListCommand = new RelayCommand(AddToDeleteList);
+        AutoCollectCandidatesCommand = new AsyncRelayCommand(AutoCollectCandidatesAsync);
+        ClearDeleteListCommand = new RelayCommand(ClearDeleteList);
+        DeleteSelectedCommand = new AsyncRelayCommand(DeleteSelectedAsync);
+        AnalyzeStorageCommand = new AsyncRelayCommand(AnalyzeStorageAsync);
+        SaveSettingsCommand = new RelayCommand(SaveSettings);
+        ReloadSettingsCommand = new RelayCommand(ReloadSettings);
+        RefreshErrorsCommand = new RelayCommand(LoadRecentErrors);
+
+        CurrentFiles.CollectionChanged += CurrentFiles_CollectionChanged;
+        DeleteList.CollectionChanged += DeleteList_CollectionChanged;
+
+        Refresh();
+        LoadRecentErrors();
+    }
+
+    private void Settings_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        SettingsService.Save(Settings);
+        StatusMessage = "설정이 저장되었습니다.";
+    }
+
+    private void CurrentFiles_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.OldItems != null)
+        {
+            foreach (var item in e.OldItems.OfType<FileItem>())
+                item.PropertyChanged -= CurrentFile_PropertyChanged;
+        }
+
+        if (e.NewItems != null)
+        {
+            foreach (var item in e.NewItems.OfType<FileItem>())
+                item.PropertyChanged += CurrentFile_PropertyChanged;
+        }
+
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+            RequestSelectionInfoRefresh();
+    }
+
+    private void CurrentFile_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(FileItem.IsSelected))
+            RequestSelectionInfoRefresh();
+    }
+
+    private void DeleteList_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (_suspendDeleteListRefresh)
+        {
+            return;
+        }
+
+        RefreshDeleteListViews();
+    }
+
+    private void Refresh()
+    {
+        LoadDriveInfo();
+        LoadQuickAccess();
+        LoadRecentErrors();
+        StatusMessage = "새로고침 완료";
+    }
+
+    private void LoadDriveInfo()
+    {
+        DriveInfoList.Clear();
+        foreach (var drive in StorageService.GetDriveInfo())
+            DriveInfoList.Add(drive);
+
+        RefreshDriveChart();
+    }
+
+    private void RefreshDriveChart()
+    {
+        DriveChartItems.Clear();
+        foreach (var drive in DriveInfoList)
+        {
+            DriveChartItems.Add(new ChartItem
+            {
+                Label = drive.Name,
+                Value = drive.UsedSpace,
+                Percent = drive.UsagePercent,
+                Display = drive.UsageDisplay,
+                BarBrush = drive.UsageBrush
+            });
+        }
+    }
+
+    private void LoadQuickAccess()
+    {
+        RootNodes.Clear();
+        FavoriteFolders.Clear();
+
+        var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, path) in StorageService.GetQuickAccessFolders())
+        {
+            if (!added.Add(path)) continue;
+
+            var rootNode = CreateFolderNode(name, path);
+            RootNodes.Add(rootNode);
+            FavoriteFolders.Add(new FolderNode
+            {
+                Name = name,
+                FullPath = path,
+                IsProjectFolder = rootNode.IsProjectFolder,
+                ProjectType = rootNode.ProjectType
+            });
+        }
+
+        SelectedFavoriteFolder = FavoriteFolders.FirstOrDefault();
+    }
+
+    private FolderNode CreateFolderNode(string name, string fullPath)
+    {
+        var (isProject, projectType) = FileScanner.DetectProjectType(fullPath);
+        var node = new FolderNode
+        {
+            Name = name,
+            FullPath = fullPath,
+            IsProjectFolder = isProject,
+            ProjectType = projectType
+        };
+
+        if (HasSubFolders(fullPath))
+            node.Children.Add(new FolderNode { Name = "...", FullPath = "" });
+
+        return node;
+    }
+
+    private static bool HasSubFolders(string path)
+    {
+        try { return FileScanner.EnumerateDirectoriesSafely(path, recursive: false).Any(); }
+        catch { return false; }
+    }
+
+    private async Task AddFolderAsync()
+    {
+        var dialog = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "추가할 폴더를 선택하세요.",
+            UseDescriptionForTitle = true
+        };
+
+        if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+            return;
+
+        var path = dialog.SelectedPath;
+        var node = CreateFolderNode(Path.GetFileName(path) ?? path, path);
+        RootNodes.Add(node);
+
+        StatusMessage = node.IsProjectFolder
+            ? $"'{node.Name}' 추가됨 [{node.ProjectType}]"
+            : $"'{node.Name}' 추가됨";
+
+        await Task.CompletedTask;
+    }
+
+    public async Task ExpandNodeAsync(FolderNode node)
+    {
+        if (node.Children.Count == 1 && string.IsNullOrEmpty(node.Children[0].FullPath))
+        {
+            var progress = new Progress<string>(ReportOperation);
+            await FileScanner.LoadChildrenAsync(node, progress, CancellationToken.None);
+        }
+    }
+
+    public async Task LoadFilesForFolderAsync(FolderNode node)
+    {
+        var operationId = BeginOperation($"'{node.Name}' 스캔 중...", indeterminate: true);
+        ResetScanCollections();
+        _currentScanRootPath = node.FullPath;
+        _currentScanRootName = node.Name;
+
+        try
+        {
+            ResetSelectionDetails();
+            var ct = _cts!.Token;
+            var progress = new Progress<string>(ReportOperation);
+            var includeSubfolders = Settings.DefaultScanMode == "Quick" ? false : Settings.IncludeSubfolders;
+            var files = await FileScanner.ScanFilesAsync(node.FullPath, includeSubfolders, progress, ct);
+            if (!IsCurrentOperation(operationId, ct))
+                return;
+
+            ApplyLearnedRecommendations(files);
+
+            ReportOperation($"'{node.Name}' 폴더 구조 정리 중...");
+            var cleanupRoot = await Task.Run(() => BuildCleanupTree(node.Name, node.FullPath, files, ct), ct);
+            if (!IsCurrentOperation(operationId, ct))
+                return;
+
+            ApplyScanResults(files, cleanupRoot);
+
+            StatusMessage = $"스캔 완료: {files.Count}개 파일 | 총 {Fmt(files.Sum(file => file.FileSize))}";
+            OperationDetail = "위험도 분포와 추천 우선순위가 갱신되었습니다.";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "스캔 취소됨";
+        }
+        catch (Exception ex)
+        {
+            ErrorLogService.LogException("Folder Scan", ex);
+            StatusMessage = $"스캔 실패: {ex.Message}";
+        }
+        finally
+        {
+            EndBusy(operationId);
+        }
+    }
+
+    private void SetAll(bool selected)
+    {
+        PerformSelectionInfoBatch(() =>
+        {
+            foreach (var file in CurrentFiles)
+                file.IsSelected = selected;
+        });
+    }
+
+    private void SelectDangerous()
+    {
+        PerformSelectionInfoBatch(() =>
+        {
+            foreach (var file in CurrentFiles)
+                file.IsSelected = file.RiskScore < Settings.AutoSelectRiskThreshold && !file.IsInUse;
+        });
+    }
+
+    private void UpdateInfo()
+    {
+        var selectedCount = CurrentFiles.Count(file => file.IsSelected);
+        var selectedSize = CurrentFiles.Where(file => file.IsSelected).Sum(file => file.FileSize);
+        SelectedInfo = selectedCount > 0 ? $"선택: {selectedCount}개 / {Fmt(selectedSize)}" : "";
+    }
+
+    private void RequestSelectionInfoRefresh()
+    {
+        if (_suspendSelectionInfoRefresh)
+        {
+            _selectionInfoRefreshPending = true;
+            return;
+        }
+
+        QueueSelectionInfoRefresh();
+    }
+
+    private void QueueSelectionInfoRefresh()
+    {
+        if (_selectionInfoRefreshQueued)
+            return;
+
+        _selectionInfoRefreshQueued = true;
+        if (System.Windows.Application.Current?.Dispatcher == null)
+        {
+            _selectionInfoRefreshQueued = false;
+            UpdateInfo();
+            return;
+        }
+
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _selectionInfoRefreshQueued = false;
+            UpdateInfo();
+        }), System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    private void PerformSelectionInfoBatch(Action action)
+    {
+        var wasSuspended = _suspendSelectionInfoRefresh;
+        _suspendSelectionInfoRefresh = true;
+
+        try { action(); }
+        finally
+        {
+            _suspendSelectionInfoRefresh = wasSuspended;
+            if (!wasSuspended && _selectionInfoRefreshPending)
+            {
+                _selectionInfoRefreshPending = false;
+                QueueSelectionInfoRefresh();
+            }
+        }
+    }
+
+    private void AddToDeleteList()
+    {
+        var added = 0;
+        var existingPaths = DeleteList
+            .Select(file => file.FilePath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        PerformDeleteListBatch(() =>
+        {
+            foreach (var file in CurrentFiles.Where(file => file.IsSelected))
+            {
+                if (!existingPaths.Add(file.FilePath))
+                    continue;
+
+                DeleteList.Add(file);
+                added++;
+            }
+        });
+
+        StatusMessage = $"삭제 목록에 {added}개 추가됨 (총 {DeleteList.Count}개)";
+    }
+
+    private async Task AutoCollectCandidatesAsync()
+    {
+        if (SelectedFavoriteFolder == null || string.IsNullOrWhiteSpace(SelectedFavoriteFolder.FullPath))
+        {
+            System.Windows.MessageBox.Show("즐겨찾기 폴더를 선택해주세요.", "안내", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var operationId = BeginOperation($"'{SelectedFavoriteFolder.Name}' 자동 분석 중...", indeterminate: true);
+        ResetScanCollections();
+        _currentScanRootPath = SelectedFavoriteFolder.FullPath;
+        _currentScanRootName = SelectedFavoriteFolder.Name;
+
+        try
+        {
+            ResetSelectionDetails();
+            var ct = _cts!.Token;
+            var progress = new Progress<string>(ReportOperation);
+            var files = Settings.DefaultScanMode == "Detailed"
+                ? await FileScanner.ScanFilesAsync(SelectedFavoriteFolder.FullPath, true, progress, ct)
+                : Settings.DefaultScanMode == "Quick"
+                    ? await FileScanner.ScanFilesAsync(SelectedFavoriteFolder.FullPath, false, progress, ct)
+                    : await FileScanner.ScanSmartForCleanupAsync(SelectedFavoriteFolder.FullPath, progress, ct);
+            if (!IsCurrentOperation(operationId, ct))
+                return;
+
+            ApplyLearnedRecommendations(files);
+            ReportOperation($"'{SelectedFavoriteFolder.Name}' 폴더 구조 정리 중...");
+            var cleanupRoot = await Task.Run(
+                () => BuildCleanupTree(SelectedFavoriteFolder.Name, SelectedFavoriteFolder.FullPath, files, ct),
+                ct);
+            if (!IsCurrentOperation(operationId, ct))
+                return;
+
+            ApplyScanResults(files, cleanupRoot);
+
+            var candidates = files
+                .Where(file => file.RiskScore < Settings.AutoSelectRiskThreshold && !file.IsInUse)
+                .ToList();
+            var added = 0;
+            var existingPaths = DeleteList
+                .Select(file => file.FilePath)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            PerformSelectionInfoBatch(() =>
+            {
+                PerformDeleteListBatch(() =>
+                {
+                    foreach (var file in candidates)
+                    {
+                        file.IsSelected = true;
+                        if (!existingPaths.Add(file.FilePath))
+                            continue;
+
+                        DeleteList.Add(file);
+                        added++;
+                    }
+                });
+            });
+
+            StatusMessage = $"자동 수집 완료: 후보 {candidates.Count}개 중 {added}개를 삭제 목록에 추가";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "자동 수집이 취소되었습니다.";
+        }
+        catch (Exception ex)
+        {
+            ErrorLogService.LogException("Auto Collect", ex);
+            StatusMessage = $"자동 수집 실패: {ex.Message}";
+        }
+        finally
+        {
+            EndBusy(operationId);
+        }
+    }
+
+    private void ClearDeleteList()
+    {
+        PerformDeleteListBatch(DeleteList.Clear);
+        StatusMessage = "삭제 목록을 초기화했습니다.";
+    }
+
+    private async Task DeleteSelectedAsync()
+    {
+        var targets = DeleteList.Where(file => file.IsSelected).ToList();
+        if (!targets.Any())
+        {
+            System.Windows.MessageBox.Show("삭제할 파일을 체크해주세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var preview = string.Join("\n", targets.Take(5).Select(file => $"  - {file.FileName}"));
+        if (targets.Count > 5)
+            preview += $"\n  ... 외 {targets.Count - 5}개";
+
+        var result = System.Windows.MessageBox.Show(
+            $"선택한 {targets.Count}개 파일 ({Fmt(targets.Sum(file => file.FileSize))})을 휴지통으로 이동할까요?\n\n{preview}",
+            "삭제 확인",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.Yes)
+            return;
+
+        var operationId = BeginOperation("휴지통으로 이동 중...", indeterminate: false);
+
+        try
+        {
+            await EnsureUsageCheckedAsync(targets);
+            var inUseTargets = targets.Where(file => file.IsInUse).ToList();
+            if (inUseTargets.Count > 0)
+            {
+                targets = targets.Except(inUseTargets).ToList();
+                System.Windows.MessageBox.Show(
+                    $"사용 중인 파일 {inUseTargets.Count}개는 제외했습니다.",
+                    "사용 중인 파일 제외",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+
+                if (targets.Count == 0)
+                {
+                    StatusMessage = "이동할 수 있는 파일이 없습니다.";
+                    return;
+                }
+            }
+
+            var (success, error) = await Task.Run(() => RecycleBinService.SendToRecycleBin(targets.Select(file => file.FilePath)));
+            if (success)
+            {
+                RecommendationProfileService.RecordDeletedFiles(targets);
+                _recommendationProfile = RecommendationProfileService.Load();
+
+                PerformDeleteListBatch(() =>
+                {
+                    foreach (var file in targets)
+                    {
+                        DeleteList.Remove(file);
+                        CurrentFiles.Remove(file);
+                    }
+                });
+
+                UpdateInfo();
+                RebuildCleanupNodes(_currentScanRootName, _currentScanRootPath);
+                RefreshRiskDistribution();
+                ScanProgress = 100;
+                StatusMessage = $"{targets.Count}개 파일을 휴지통으로 이동했습니다.";
+                OperationDetail = "삭제 이력이 로컬 추천 프로필에 반영되었습니다.";
+            }
+            else
+            {
+                StatusMessage = $"삭제 실패: {error}";
+                System.Windows.MessageBox.Show($"오류 발생:\n{error}", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorLogService.LogException("Delete Selected", ex);
+            StatusMessage = $"삭제 실패: {ex.Message}";
+        }
+        finally
+        {
+            EndBusy(operationId);
+        }
+    }
+
+    private async Task RefreshSelectedFileMetadataAsync(FileItem? file, int refreshVersion)
+    {
+        if (file == null || !file.NeedsUsageCheck)
+            return;
+
+        var metadata = await ResolveFileMetadataAsync(file);
+        if (refreshVersion != _selectedFileRefreshVersion || !ReferenceEquals(file, SelectedFile))
+            return;
+
+        ApplyResolvedMetadata(file, metadata);
+    }
+
+    private async Task EnsureUsageCheckedAsync(IReadOnlyCollection<FileItem> files)
+    {
+        var pendingFiles = files.Where(file => file.NeedsUsageCheck).ToList();
+        if (pendingFiles.Count == 0)
+            return;
+
+        IsProgressIndeterminate = false;
+        for (var i = 0; i < pendingFiles.Count; i++)
+        {
+            ScanProgress = (double)(i + 1) / pendingFiles.Count * 100;
+            ReportOperation($"사용 여부 확인 중... {i + 1}/{pendingFiles.Count}");
+
+            var file = pendingFiles[i];
+            var metadata = await ResolveFileMetadataAsync(file);
+            ApplyResolvedMetadata(file, metadata);
+        }
+    }
+
+    private async Task<(bool Success, bool IsInUse, int RiskScore, string RiskLevel, string RiskReason, string AssociatedProgram)>
+        ResolveFileMetadataAsync(FileItem file)
+    {
+        return await Task.Run(() =>
+        {
+            if (!FileScanner.TryResolveDeferredMetadata(file.FilePath, file.AssociatedProgram, out var metadata))
+                return (false, false, 0, "", "", file.AssociatedProgram);
+
+            return (true, metadata.IsInUse, metadata.RiskScore, metadata.RiskLevel, metadata.RiskReason, metadata.AssociatedProgram);
+        });
+    }
+
+    private void ApplyResolvedMetadata(
+        FileItem file,
+        (bool Success, bool IsInUse, int RiskScore, string RiskLevel, string RiskReason, string AssociatedProgram) metadata)
+    {
+        file.NeedsUsageCheck = false;
+        if (metadata.Success)
+        {
+            file.IsInUse = metadata.IsInUse;
+            file.RiskScore = metadata.RiskScore;
+            file.RiskLevel = metadata.RiskLevel;
+            file.RiskReason = metadata.RiskReason;
+            file.AssociatedProgram = metadata.AssociatedProgram;
+        }
+
+        if (ReferenceEquals(file, SelectedFile))
+        {
+            OnPropertyChanged(nameof(SelectedEntryInfo));
+            OnPropertyChanged(nameof(SelectedEntryDetail));
+        }
+    }
+
+    private async Task AnalyzeStorageAsync()
+    {
+        var operationId = BeginOperation("저장공간 분석 중...", indeterminate: true);
+        StorageItems.Clear();
+
+        try
+        {
+            var quickAccess = StorageService.GetQuickAccessFolders();
+            var quickPaths = quickAccess.Select(x => x.FolderPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var paths = quickAccess.Select(folder => folder.FolderPath).ToList();
+
+            foreach (var node in RootNodes.Where(node => !string.IsNullOrWhiteSpace(node.FullPath)))
+            {
+                if (!quickPaths.Contains(node.FullPath))
+                    paths.Add(node.FullPath);
+            }
+
+            var progress = new Progress<string>(ReportOperation);
+            var items = await StorageService.AnalyzeFolderSizesAsync(paths, progress, _cts!.Token);
+            if (!IsCurrentOperation(operationId, _cts!.Token))
+                return;
+
+            Brush[] colors =
+            {
+                new SolidColorBrush(Color.FromRgb(33, 150, 243)),
+                new SolidColorBrush(Color.FromRgb(76, 175, 80)),
+                new SolidColorBrush(Color.FromRgb(255, 193, 7)),
+                new SolidColorBrush(Color.FromRgb(244, 67, 54)),
+                new SolidColorBrush(Color.FromRgb(156, 39, 176)),
+                new SolidColorBrush(Color.FromRgb(0, 188, 212))
+            };
+
+            for (var i = 0; i < items.Count; i++)
+                items[i].BarBrush = colors[i % colors.Length];
+
+            foreach (var item in items)
+                StorageItems.Add(item);
+
+            LoadDriveInfo();
+            StatusMessage = $"분석 완료: {items.Count}개 폴더";
+            OperationDetail = "드라이브 사용량, 큰 폴더, 현재 스캔 위험 파일 비율을 갱신했습니다.";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "분석 취소됨";
+        }
+        catch (Exception ex)
+        {
+            ErrorLogService.LogException("Storage Analysis", ex);
+            StatusMessage = $"분석 실패: {ex.Message}";
+            System.Windows.MessageBox.Show($"저장공간 분석 중 오류 발생:\n{ex.Message}", "분석 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            EndBusy(operationId);
+        }
+    }
+
+    private void ApplyLearnedRecommendations(IReadOnlyCollection<FileItem> files)
+    {
+        if (Settings.PreferLearnedRecommendations)
+            RecommendationProfileService.ApplyLearnedPriority(files, _recommendationProfile);
+    }
+
+    private void RefreshRiskDistribution()
+    {
+        RiskDistributionItems.Clear();
+        var total = Math.Max(1, CurrentFiles.Count);
+        var groups = new[]
+        {
+            new { Label = "삭제 후보", Count = CurrentFiles.Count(f => f.RiskScore < Settings.AutoSelectRiskThreshold && !f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(33, 150, 243)) },
+            new { Label = "주의", Count = CurrentFiles.Count(f => f.RiskScore >= Settings.AutoSelectRiskThreshold && f.RiskScore < 70), Brush = new SolidColorBrush(Color.FromRgb(255, 193, 7)) },
+            new { Label = "보존 권장", Count = CurrentFiles.Count(f => f.RiskScore >= 70 || f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(244, 67, 54)) }
+        };
+
+        foreach (var group in groups)
+        {
+            RiskDistributionItems.Add(new ChartItem
+            {
+                Label = group.Label,
+                Value = group.Count,
+                Percent = (double)group.Count / total * 100,
+                Display = $"{group.Count}개 ({(double)group.Count / total * 100:F1}%)",
+                BarBrush = group.Brush
+            });
+        }
+    }
+
+    private void SaveSettings()
+    {
+        SettingsService.Save(Settings);
+        StatusMessage = "설정을 저장했습니다.";
+    }
+
+    private void ReloadSettings()
+    {
+        Settings = SettingsService.Load();
+        StatusMessage = "설정을 다시 불러왔습니다.";
+    }
+
+    private void LoadRecentErrors()
+    {
+        RecentErrors.Clear();
+        foreach (var item in ErrorLogService.LoadRecent())
+            RecentErrors.Add(item);
+    }
+
+    private void Cancel()
+    {
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+    }
+
+    public void SetSelectedFolder(FolderNode? node)
+    {
+        // Keep for compatibility with existing code-behind event wiring.
+    }
+
+    public void SetSelectedCleanupNode(CleanupNode? node)
+        => SelectedCleanupNode = node;
+
+    private void ResetScanCollections()
+    {
+        ReplaceCurrentFiles(Array.Empty<FileItem>());
+        CurrentCleanupNodes.ReplaceRange(Array.Empty<CleanupNode>());
+        SelectedInfo = "";
+        RefreshRiskDistribution();
+    }
+
+    private void ReplaceCurrentFiles(IEnumerable<FileItem> files)
+    {
+        var currentFiles = CurrentFiles.ToList();
+        foreach (var file in currentFiles)
+            file.PropertyChanged -= CurrentFile_PropertyChanged;
+
+        var replacement = files.ToList();
+        CurrentFiles.ReplaceRange(replacement);
+
+        foreach (var file in replacement)
+            file.PropertyChanged += CurrentFile_PropertyChanged;
+
+        UpdateInfo();
+        RefreshRiskDistribution();
+    }
+
+    private void ApplyScanResults(IReadOnlyCollection<FileItem> files, CleanupNode cleanupRoot)
+    {
+        ReplaceCurrentFiles(files);
+        CurrentCleanupNodes.ReplaceRange(new[] { cleanupRoot });
+
+        if (SelectedCleanupNode != null && !string.IsNullOrWhiteSpace(SelectedCleanupNode.FullPath))
+            SelectedCleanupNode = FindCleanupNode(cleanupRoot, SelectedCleanupNode.FullPath);
+    }
+
+    private void RebuildCleanupNodes(string rootName, string rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+        {
+            CurrentCleanupNodes.ReplaceRange(Array.Empty<CleanupNode>());
+            return;
+        }
+
+        var rootNode = BuildCleanupTree(rootName, rootPath, CurrentFiles.ToList(), CancellationToken.None);
+        CurrentCleanupNodes.ReplaceRange(new[] { rootNode });
+
+        if (SelectedCleanupNode != null && !string.IsNullOrWhiteSpace(SelectedCleanupNode.FullPath))
+            SelectedCleanupNode = FindCleanupNode(rootNode, SelectedCleanupNode.FullPath);
+    }
+
+    private void RebuildDeleteListNodes()
+    {
+        if (DeleteList.Count == 0)
+        {
+            DeleteListNodes.ReplaceRange(Array.Empty<CleanupNode>());
+            return;
+        }
+
+        var rootPath = FindCommonRootPath(DeleteList.Select(file => file.FilePath));
+        var rootName = string.IsNullOrWhiteSpace(rootPath)
+            ? "삭제 목록"
+            : Path.GetFileName(Path.TrimEndingDirectorySeparator(rootPath));
+
+        if (string.IsNullOrWhiteSpace(rootName))
+            rootName = rootPath;
+
+        var rootNode = BuildCleanupTree(rootName, rootPath, DeleteList.ToList(), CancellationToken.None);
+        DeleteListNodes.ReplaceRange(new[] { rootNode });
+    }
+
+    private void PerformDeleteListBatch(Action action)
+    {
+        var wasSuspended = _suspendDeleteListRefresh;
+        _suspendDeleteListRefresh = true;
+
+        try
+        {
+            action();
+        }
+        finally
+        {
+            _suspendDeleteListRefresh = wasSuspended;
+
+            if (!wasSuspended)
+            {
+                RefreshDeleteListViews();
+            }
+        }
+    }
+
+    private void RefreshDeleteListViews()
+    {
+        OnPropertyChanged(nameof(DeleteListSummary));
+        RebuildDeleteListNodes();
+    }
+
+    private CleanupNode BuildCleanupTree(
+        string rootName,
+        string rootPath,
+        IReadOnlyCollection<FileItem> files,
+        CancellationToken ct)
+    {
+        var rootNode = new CleanupNode
+        {
+            Name = rootName,
+            FullPath = rootPath,
+            IsFolder = true,
+            IsExpanded = true
+        };
+
+        var folderMap = new Dictionary<string, CleanupNode>(StringComparer.OrdinalIgnoreCase)
+        {
+            [rootPath] = rootNode
+        };
+
+        foreach (var file in files)
+        {
+            ct.ThrowIfCancellationRequested();
+            var parentPath = Path.GetDirectoryName(file.FilePath) ?? rootPath;
+            var parentNode = EnsureFolderNode(rootNode, folderMap, parentPath, rootPath);
+            parentNode.AddChild(new CleanupNode(file));
+        }
+
+        rootNode.SortRecursive();
+        return rootNode;
+    }
+
+    private static CleanupNode EnsureFolderNode(
+        CleanupNode rootNode,
+        IDictionary<string, CleanupNode> folderMap,
+        string targetPath,
+        string rootPath)
+    {
+        if (folderMap.TryGetValue(targetPath, out var existing))
+            return existing;
+
+        var relativePath = Path.GetRelativePath(rootPath, targetPath);
+        var parts = relativePath
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Where(part => !string.IsNullOrWhiteSpace(part) && part != ".")
+            .ToList();
+
+        var currentNode = rootNode;
+        var currentPath = rootPath;
+
+        foreach (var part in parts)
+        {
+            currentPath = Path.Combine(currentPath, part);
+            if (folderMap.TryGetValue(currentPath, out var mapped))
+            {
+                currentNode = mapped;
+                continue;
+            }
+
+            var newNode = new CleanupNode
+            {
+                Name = part,
+                FullPath = currentPath,
+                IsFolder = true
+            };
+
+            currentNode.AddChild(newNode);
+            folderMap[currentPath] = newNode;
+            currentNode = newNode;
+        }
+
+        return currentNode;
+    }
+
+    private static string FindCommonRootPath(IEnumerable<string> filePaths)
+    {
+        var directories = filePaths
+            .Select(path => Path.GetDirectoryName(path))
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path!)))
+            .ToList();
+
+        if (directories.Count == 0)
+            return "";
+
+        var common = directories[0];
+        foreach (var directory in directories.Skip(1))
+        {
+            while (!string.IsNullOrWhiteSpace(common)
+                && !directory.StartsWith(common + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(directory, common, StringComparison.OrdinalIgnoreCase))
+            {
+                var parent = Path.GetDirectoryName(common);
+                if (string.IsNullOrWhiteSpace(parent) || parent == common)
+                    return Path.GetPathRoot(common) ?? "";
+
+                common = Path.TrimEndingDirectorySeparator(parent);
+            }
+        }
+
+        return common;
+    }
+
+    private static CleanupNode? FindCleanupNode(CleanupNode root, string path)
+    {
+        if (string.Equals(root.FullPath, path, StringComparison.OrdinalIgnoreCase))
+            return root;
+
+        foreach (var child in root.Children)
+        {
+            var found = FindCleanupNode(child, path);
+            if (found != null)
+                return found;
+        }
+
+        return null;
+    }
+
+    private void ResetSelectionDetails()
+    {
+        SelectedCleanupNode = null;
+        SelectedFile = null;
+        ClearPreview();
+        PreviewMessage = "이미지 파일을 선택하면 미리보기를 확인할 수 있습니다.";
+    }
+
+    private void UpdatePreview()
+    {
+        ClearPreview();
+
+        if (SelectedCleanupNode?.IsFolder == true)
+        {
+            PreviewMessage = "폴더는 미리보기를 지원하지 않습니다.";
+            return;
+        }
+
+        if (SelectedFile == null)
+        {
+            PreviewMessage = "이미지 파일, 텍스트 파일, OBJ 3D 파일을 선택하면 미리보기를 확인할 수 있습니다.";
+            return;
+        }
+
+        var ext = Path.GetExtension(SelectedFile.FilePath).ToLowerInvariant();
+        if (!File.Exists(SelectedFile.FilePath))
+        {
+            PreviewMessage = "파일을 찾을 수 없습니다.";
+            return;
+        }
+
+        try
+        {
+            if (IsImageExtension(ext))
+            {
+                LoadImagePreview(SelectedFile.FilePath);
+                return;
+            }
+
+            if (IsTextExtension(ext))
+            {
+                LoadTextPreview(SelectedFile.FilePath);
+                return;
+            }
+
+            if (ext == ".obj")
+            {
+                LoadObjPreview(SelectedFile.FilePath);
+                return;
+            }
+
+            if (ext == ".stl")
+            {
+                LoadStlPreview(SelectedFile.FilePath);
+                return;
+            }
+
+            if (IsKnown3DExtension(ext))
+            {
+                PreviewMessage = $"{ext.ToUpperInvariant()} 파일은 외부 3D 로더가 필요합니다. 현재 내장 미리보기는 OBJ, STL 파일을 지원합니다.";
+                return;
+            }
+
+            PreviewMessage = "미리보기를 지원하지 않는 파일입니다.";
+        }
+        catch (Exception ex)
+        {
+            ErrorLogService.LogException("Preview Load", ex);
+            ClearPreview();
+            PreviewMessage = "미리보기를 로드할 수 없습니다.";
+        }
+    }
+
+    private void ClearPreview()
+    {
+        PreviewImage = null;
+        PreviewText = "";
+        PreviewModel = null;
+        IsPreviewAvailable = false;
+        IsTextPreviewAvailable = false;
+        IsModelPreviewAvailable = false;
+        PreviewMessage = "";
+    }
+
+    private void LoadImagePreview(string path)
+    {
+        var bitmap = new BitmapImage();
+        bitmap.BeginInit();
+        bitmap.UriSource = new Uri(path);
+        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+        bitmap.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+        bitmap.EndInit();
+        bitmap.Freeze();
+
+        PreviewImage = bitmap;
+        IsPreviewAvailable = true;
+    }
+
+    private void LoadTextPreview(string path)
+    {
+        const int maxChars = 80_000;
+        var info = new FileInfo(path);
+        using var reader = new StreamReader(path, detectEncodingFromByteOrderMarks: true);
+        var buffer = new char[maxChars + 1];
+        var read = reader.ReadBlock(buffer, 0, buffer.Length);
+        var text = new string(buffer, 0, Math.Min(read, maxChars));
+
+        if (text.IndexOf('\0') >= 0)
+        {
+            PreviewMessage = "바이너리로 보이는 파일이라 텍스트 미리보기를 표시하지 않았습니다.";
+            return;
+        }
+
+        PreviewText = read > maxChars || info.Length > maxChars * 4
+            ? text + Environment.NewLine + Environment.NewLine + "... 미리보기는 앞부분만 표시됩니다."
+            : text;
+        IsTextPreviewAvailable = true;
+    }
+
+    private void LoadObjPreview(string path)
+    {
+        var model = CreateObjModel(path);
+        if (model.Children.Count == 0)
+        {
+            PreviewMessage = "표시할 수 있는 OBJ 메시를 찾지 못했습니다.";
+            return;
+        }
+
+        PreviewModel = model;
+        IsModelPreviewAvailable = true;
+    }
+
+    private void LoadStlPreview(string path)
+    {
+        var model = CreateStlModel(path);
+        if (model.Children.Count == 0)
+        {
+            PreviewMessage = "표시할 수 있는 STL 메시를 찾지 못했습니다.";
+            return;
+        }
+
+        PreviewModel = model;
+        IsModelPreviewAvailable = true;
+    }
+
+    private static Model3DGroup CreateObjModel(string path)
+    {
+        const int maxVertices = 60_000;
+        const int maxFaces = 80_000;
+        var vertices = new List<Point3D>();
+        var triangles = new Int32Collection();
+        var faceCount = 0;
+
+        foreach (var rawLine in File.ReadLines(path))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line[0] == '#')
+                continue;
+
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+                continue;
+
+            if (parts[0] == "v" && parts.Length >= 4 && vertices.Count < maxVertices)
+            {
+                if (TryParseDouble(parts[1], out var x)
+                    && TryParseDouble(parts[2], out var y)
+                    && TryParseDouble(parts[3], out var z))
+                {
+                    vertices.Add(new Point3D(x, y, z));
+                }
+            }
+            else if (parts[0] == "f" && parts.Length >= 4 && faceCount < maxFaces)
+            {
+                var face = parts
+                    .Skip(1)
+                    .Select(part => ParseObjIndex(part, vertices.Count))
+                    .Where(index => index >= 0 && index < vertices.Count)
+                    .ToList();
+
+                for (var i = 1; i + 1 < face.Count; i++)
+                {
+                    triangles.Add(face[0]);
+                    triangles.Add(face[i]);
+                    triangles.Add(face[i + 1]);
+                    faceCount++;
+
+                    if (faceCount >= maxFaces)
+                        break;
+                }
+            }
+        }
+
+        var group = new Model3DGroup();
+        if (vertices.Count == 0 || triangles.Count == 0)
+            return group;
+
+        NormalizePoints(vertices);
+
+        var mesh = new MeshGeometry3D
+        {
+            Positions = new Point3DCollection(vertices),
+            TriangleIndices = triangles
+        };
+
+        var material = new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(80, 140, 210)));
+        group.Children.Add(new AmbientLight(Colors.Gray));
+        group.Children.Add(new DirectionalLight(Colors.White, new Vector3D(-0.4, -0.6, -1)));
+        group.Children.Add(new GeometryModel3D(mesh, material) { BackMaterial = material });
+        group.Freeze();
+        return group;
+    }
+
+    private static Model3DGroup CreateStlModel(string path)
+    {
+        var vertices = new List<Point3D>();
+        var triangles = new Int32Collection();
+
+        if (LooksLikeBinaryStl(path))
+            ReadBinaryStl(path, vertices, triangles);
+        else
+            ReadAsciiStl(path, vertices, triangles);
+
+        var group = new Model3DGroup();
+        if (vertices.Count == 0 || triangles.Count == 0)
+            return group;
+
+        NormalizePoints(vertices);
+
+        var mesh = new MeshGeometry3D
+        {
+            Positions = new Point3DCollection(vertices),
+            TriangleIndices = triangles
+        };
+
+        var material = new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(90, 165, 120)));
+        group.Children.Add(new AmbientLight(Colors.Gray));
+        group.Children.Add(new DirectionalLight(Colors.White, new Vector3D(-0.4, -0.6, -1)));
+        group.Children.Add(new GeometryModel3D(mesh, material) { BackMaterial = material });
+        group.Freeze();
+        return group;
+    }
+
+    private static bool LooksLikeBinaryStl(string path)
+    {
+        var info = new FileInfo(path);
+        if (info.Length < 84)
+            return false;
+
+        using var stream = File.OpenRead(path);
+        stream.Position = 80;
+        Span<byte> countBytes = stackalloc byte[4];
+        if (stream.Read(countBytes) != 4)
+            return false;
+
+        var triangleCount = BitConverter.ToUInt32(countBytes);
+        return 84L + triangleCount * 50L == info.Length;
+    }
+
+    private static void ReadBinaryStl(string path, List<Point3D> vertices, Int32Collection triangles)
+    {
+        const int maxFaces = 80_000;
+        using var reader = new BinaryReader(File.OpenRead(path));
+        reader.BaseStream.Position = 80;
+        var faceCount = Math.Min(reader.ReadUInt32(), maxFaces);
+
+        for (var face = 0; face < faceCount; face++)
+        {
+            reader.ReadSingle();
+            reader.ReadSingle();
+            reader.ReadSingle();
+
+            var start = vertices.Count;
+            for (var i = 0; i < 3; i++)
+            {
+                vertices.Add(new Point3D(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle()));
+                triangles.Add(start + i);
+            }
+
+            reader.ReadUInt16();
+        }
+    }
+
+    private static void ReadAsciiStl(string path, List<Point3D> vertices, Int32Collection triangles)
+    {
+        const int maxFaces = 80_000;
+        var faceVertexCount = 0;
+
+        foreach (var rawLine in File.ReadLines(path))
+        {
+            if (triangles.Count / 3 >= maxFaces)
+                break;
+
+            var line = rawLine.Trim();
+            if (!line.StartsWith("vertex ", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 4
+                || !TryParseDouble(parts[1], out var x)
+                || !TryParseDouble(parts[2], out var y)
+                || !TryParseDouble(parts[3], out var z))
+            {
+                continue;
+            }
+
+            vertices.Add(new Point3D(x, y, z));
+            triangles.Add(vertices.Count - 1);
+            faceVertexCount++;
+
+            if (faceVertexCount == 3)
+                faceVertexCount = 0;
+        }
+    }
+
+    private static void NormalizePoints(List<Point3D> points)
+    {
+        var minX = points.Min(p => p.X);
+        var minY = points.Min(p => p.Y);
+        var minZ = points.Min(p => p.Z);
+        var maxX = points.Max(p => p.X);
+        var maxY = points.Max(p => p.Y);
+        var maxZ = points.Max(p => p.Z);
+        var center = new Point3D((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+        var scale = Math.Max(maxX - minX, Math.Max(maxY - minY, maxZ - minZ));
+        if (scale <= 0)
+            scale = 1;
+
+        for (var i = 0; i < points.Count; i++)
+        {
+            var p = points[i];
+            points[i] = new Point3D(
+                (p.X - center.X) / scale * 3,
+                (p.Y - center.Y) / scale * 3,
+                (p.Z - center.Z) / scale * 3);
+        }
+    }
+
+    private static int ParseObjIndex(string token, int vertexCount)
+    {
+        var value = token.Split('/')[0];
+        if (!int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var index))
+            return -1;
+
+        return index > 0 ? index - 1 : vertexCount + index;
+    }
+
+    private static bool TryParseDouble(string value, out double result)
+        => double.TryParse(
+            value,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out result);
+
+    private static bool IsImageExtension(string ext)
+        => new[] { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp" }.Contains(ext);
+
+    private static bool IsTextExtension(string ext)
+        => new[]
+        {
+            ".txt", ".log", ".md", ".json", ".xml", ".csv", ".ini", ".cfg", ".config",
+            ".cs", ".xaml", ".js", ".ts", ".html", ".css", ".py", ".java", ".cpp", ".h",
+            ".sql", ".ps1", ".bat", ".cmd", ".yaml", ".yml"
+        }.Contains(ext);
+
+    private static bool IsKnown3DExtension(string ext)
+        => new[] { ".fbx", ".dae", ".gltf", ".glb", ".3ds", ".ply", ".blend" }.Contains(ext);
+
+    private int BeginOperation(string message, bool indeterminate)
+    {
+        Cancel();
+        var operationId = Interlocked.Increment(ref _activeOperationId);
+        BeginBusy(message, indeterminate);
+        return operationId;
+    }
+
+    private bool IsCurrentOperation(int operationId, CancellationToken ct)
+        => operationId == _activeOperationId && !ct.IsCancellationRequested;
+
+    private void BeginBusy(string message, bool indeterminate)
+    {
+        IsScanning = true;
+        IsProgressIndeterminate = indeterminate;
+        ScanProgress = 0;
+        StatusMessage = message;
+        OperationDetail = message;
+    }
+
+    private void EndBusy(int operationId)
+    {
+        if (operationId != _activeOperationId)
+            return;
+
+        IsScanning = false;
+        if (!IsProgressIndeterminate && ScanProgress < 100)
+            ScanProgress = 100;
+    }
+
+    private void ReportOperation(string message)
+    {
+        if (Settings.ShowDetailedProgress)
+            OperationDetail = message;
+
+        StatusMessage = message;
+    }
+
+    private static string Fmt(long bytes)
+    {
+        double size = bytes;
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        var unitIndex = 0;
+
+        while (size >= 1024 && unitIndex < units.Length - 1)
+        {
+            size /= 1024;
+            unitIndex++;
+        }
+
+        return $"{size:F1} {units[unitIndex]}";
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    protected void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}

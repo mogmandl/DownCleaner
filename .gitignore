@@ -1,0 +1,49 @@
+# Build output
+bin/
+obj/
+artifacts/
+
+# Visual Studio / Rider / VS Code user state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# .NET generated files
+TestResult*/
+*.nupkg
+*.snupkg
+project.lock.json
+project.assets.json
+*.nuget.g.props
+*.nuget.g.targets
+*.nuget.dgspec.json
+
+# Logs and local runtime data
+*.log
+error.log
+recent-errors.json
+settings.json
+recommendations.json
+
+# Windows / Explorer metadata
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.cache
+*.pid
+
+# Publish output
+publish/
+*.appxbundle
+*.msix
+*.msixbundle
