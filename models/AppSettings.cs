@@ -7,6 +7,7 @@ public class AppSettings : INotifyPropertyChanged
 {
     private int _autoSelectRiskThreshold = 40;
     private string _defaultScanMode = "Detailed";
+    private string _cleanupProfile = ScanPolicy.DailyCleanup;
     private bool _includeSubfolders = true;
     private bool _showDetailedProgress = true;
     private bool _preferLearnedRecommendations = true;
@@ -31,6 +32,24 @@ public class AppSettings : INotifyPropertyChanged
             var next = value is "Quick" or "Detailed" ? value : "Detailed";
             if (_defaultScanMode == next) return;
             _defaultScanMode = next;
+            OnPropertyChanged();
+        }
+    }
+
+    public string CleanupProfile
+    {
+        get => _cleanupProfile;
+        set
+        {
+            var next = value is ScanPolicy.DailyCleanup
+                or ScanPolicy.LargeFileCleanup
+                or ScanPolicy.AdvancedCleanup
+                or ScanPolicy.SafeReview
+                ? value
+                : ScanPolicy.DailyCleanup;
+
+            if (_cleanupProfile == next) return;
+            _cleanupProfile = next;
             OnPropertyChanged();
         }
     }

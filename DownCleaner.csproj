@@ -1,5 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <ApplicationIcon>img\DownCleanerIcon.ico</ApplicationIcon>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
@@ -8,4 +9,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>FileCleaner</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="img\DownCleanerIcon.ico" />
+  </ItemGroup>
 </Project>

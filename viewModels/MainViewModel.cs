@@ -69,6 +69,35 @@ public class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<ChartItem> RiskDistributionItems { get; } = new();
     public ObservableCollection<ErrorHistoryItem> RecentErrors { get; } = new();
     public IReadOnlyList<string> ScanModes { get; } = new[] { "Detailed", "Quick" };
+    public IReadOnlyList<CleanupProfileOption> CleanupProfiles { get; } = new[]
+    {
+        new CleanupProfileOption
+        {
+            Name = ScanPolicy.DailyCleanup,
+            Description = "다운로드와 바탕화면을 안전하게 정리합니다. 오래된 설치 파일, 압축 파일, 임시 다운로드 파일을 우선합니다."
+        },
+        new CleanupProfileOption
+        {
+            Name = ScanPolicy.LargeFileCleanup,
+            Description = "큰 파일과 오래된 압축/영상/설치 파일을 더 강하게 찾습니다. 저장공간 확보가 목적일 때 적합합니다."
+        },
+        new CleanupProfileOption
+        {
+            Name = ScanPolicy.AdvancedCleanup,
+            Description = "프로젝트 캐시와 빌드 산출물 폴더까지 분석합니다. 개발, 3D, 디자인 작업 폴더 정리에 적합합니다."
+        },
+        new CleanupProfileOption
+        {
+            Name = ScanPolicy.SafeReview,
+            Description = "자동 선택을 끄고 후보를 검토 중심으로 보여줍니다. 삭제가 조심스러운 환경에 적합합니다."
+        }
+    };
+
+    public ScanPolicy CurrentScanPolicy => ScanPolicy.FromProfile(Settings.CleanupProfile);
+
+    public string CleanupProfileDescription
+        => CleanupProfiles.FirstOrDefault(p => p.Name == Settings.CleanupProfile)?.Description
+            ?? CleanupProfiles[0].Description;
 
     public AppSettings Settings
     {
@@ -285,6 +314,19 @@ public class MainViewModel : INotifyPropertyChanged
     private void Settings_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         SettingsService.Save(Settings);
+        if (e.PropertyName == nameof(AppSettings.CleanupProfile))
+        {
+            _preloadedScans.Clear();
+            OnPropertyChanged(nameof(CurrentScanPolicy));
+            OnPropertyChanged(nameof(CleanupProfileDescription));
+            RefreshRiskDistribution();
+        }
+        else if (e.PropertyName == nameof(AppSettings.DefaultScanMode)
+            || e.PropertyName == nameof(AppSettings.IncludeSubfolders))
+        {
+            _preloadedScans.Clear();
+        }
+
         StatusMessage = "설정이 저장되었습니다.";
     }
 
@@ -367,7 +409,7 @@ public class MainViewModel : INotifyPropertyChanged
                 var includeSubfolders = Settings.DefaultScanMode == "Quick"
                     ? false
                     : Settings.IncludeSubfolders;
-                var files = await FileScanner.ScanFilesAsync(folder.FullPath, includeSubfolders, scanProgress, ct);
+                var files = await FileScanner.ScanFilesAsync(folder.FullPath, includeSubfolders, CurrentScanPolicy, scanProgress, ct);
 
                 ApplyLearnedRecommendations(files);
                 _preloadedScans[folder.FullPath] = files;
@@ -671,7 +713,7 @@ public class MainViewModel : INotifyPropertyChanged
             var ct = _cts!.Token;
             var progress = new Progress<string>(ReportOperation);
             var includeSubfolders = Settings.DefaultScanMode == "Quick" ? false : Settings.IncludeSubfolders;
-            var files = await FileScanner.ScanFilesAsync(node.FullPath, includeSubfolders, progress, ct);
+            var files = await FileScanner.ScanFilesAsync(node.FullPath, includeSubfolders, CurrentScanPolicy, progress, ct);
             if (!IsCurrentOperation(operationId, ct))
                 return;
 
@@ -727,6 +769,13 @@ public class MainViewModel : INotifyPropertyChanged
 
     private void SelectDangerous()
     {
+        if (CurrentScanPolicy.DisableAutoSelect)
+        {
+            SetAll(false);
+            StatusMessage = "안전 검토 프로필에서는 자동 선택을 사용하지 않습니다.";
+            return;
+        }
+
         var limit = Math.Min(Settings.AutoSelectRiskThreshold, LowRiskCandidateLimit);
         PerformSelectionInfoBatch(() =>
         {
@@ -734,7 +783,7 @@ public class MainViewModel : INotifyPropertyChanged
                 file.IsSelected = IsLowRiskDeletionCandidate(file, limit);
         });
 
-        StatusMessage = $"낮음 등급 삭제 후보만 선택했습니다. 기준: {limit}점 미만";
+        StatusMessage = $"{CurrentScanPolicy.AutoSelectLabel}. 기준: {limit}점 미만";
     }
 
     private void UpdateInfo()
@@ -1003,9 +1052,10 @@ public class MainViewModel : INotifyPropertyChanged
     {
         RiskDistributionItems.Clear();
         var total = Math.Max(1, CurrentFiles.Count);
+        var showDeleteCandidates = !CurrentScanPolicy.DisableAutoSelect;
         var groups = new[]
         {
-            new { Label = "삭제 후보", Count = CurrentFiles.Count(f => f.RiskScore < LowRiskCandidateLimit && !f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(33, 150, 243)) },
+            new { Label = showDeleteCandidates ? "삭제 후보" : "검토 후보", Count = CurrentFiles.Count(f => f.RiskScore < LowRiskCandidateLimit && !f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(33, 150, 243)) },
             new { Label = "주의", Count = CurrentFiles.Count(f => f.RiskScore >= LowRiskCandidateLimit && f.RiskScore < 70 && !f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(255, 193, 7)) },
             new { Label = "보존 권장", Count = CurrentFiles.Count(f => f.RiskScore >= 70 || f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(244, 67, 54)) }
         };

@@ -48,10 +48,25 @@ public static class FileScanner
         "Library", "PackageCache", "Temp", "Logs", "UserSettings"
     };
 
+    private static readonly HashSet<string> AlwaysSkipDirs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".git"
+    };
+
     private static readonly HashSet<string> DeleteCandidateExts = new(StringComparer.OrdinalIgnoreCase)
     {
         ".tmp", ".temp", ".log", ".bak", ".old", ".dmp", ".cache", ".crdownload", ".part",
         ".download", ".etl", ".trace", ".swp", ".swo", ".tmp~"
+    };
+
+    private static readonly HashSet<string> DownloadCleanupExts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe", ".msi", ".msix", ".appx", ".zip", ".7z", ".rar", ".tar", ".gz", ".iso"
+    };
+
+    private static readonly HashSet<string> LargeReviewExts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".mov", ".mkv", ".avi", ".wmv", ".webm", ".zip", ".7z", ".rar", ".iso"
     };
 
     private static readonly HashSet<string> ImportantExts = new(StringComparer.OrdinalIgnoreCase)
@@ -246,8 +261,17 @@ public static class FileScanner
         bool includeSubfolders,
         IProgress<string>? progress = null,
         CancellationToken ct = default)
+        => await ScanFilesAsync(folderPath, includeSubfolders, ScanPolicy.FromProfile(null), progress, ct);
+
+    public static async Task<List<FileItem>> ScanFilesAsync(
+        string folderPath,
+        bool includeSubfolders,
+        ScanPolicy policy,
+        IProgress<string>? progress = null,
+        CancellationToken ct = default)
     {
         var result = new ConcurrentBag<FileItem>();
+        policy ??= ScanPolicy.FromProfile(null);
 
         try
         {
@@ -260,7 +284,7 @@ public static class FileScanner
                     MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount, 2, 8)
                 };
 
-                Parallel.ForEach(EnumerateFilesSafely(folderPath, includeSubfolders, ct), options, p =>
+                Parallel.ForEach(EnumerateFilesSafely(folderPath, includeSubfolders, policy, ct), options, p =>
                 {
                     options.CancellationToken.ThrowIfCancellationRequested();
                     var currentCount = Interlocked.Increment(ref count);
@@ -271,7 +295,7 @@ public static class FileScanner
                         if (!info.Exists) return;
 
                         var inUse = FileUsageService.IsFileInUse(p);
-                        var (riskScore, riskLevel, riskReason) = ComputeRisk(info, inUse);
+                        var (riskScore, riskLevel, riskReason) = ComputeRisk(info, inUse, policy);
                         var prog = FileUsageService.GetAssociatedProgram(info.Extension);
 
                         result.Add(new FileItem
@@ -354,6 +378,7 @@ public static class FileScanner
     private static IEnumerable<string> EnumerateFilesSafely(
         string rootPath,
         bool includeSubfolders,
+        ScanPolicy policy,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
@@ -407,7 +432,7 @@ public static class FileScanner
             {
                 ct.ThrowIfCancellationRequested();
 
-                if (ShouldSkipFileScanDirectory(directory, rootPath))
+                if (ShouldSkipFileScanDirectory(directory, rootPath, policy))
                     continue;
 
                 if (!ShouldVisitDirectory(directory, visited))
@@ -434,13 +459,16 @@ public static class FileScanner
         return visited.Add(NormalizePath(path));
     }
 
-    private static bool ShouldSkipFileScanDirectory(string path, string rootPath)
+    private static bool ShouldSkipFileScanDirectory(string path, string rootPath, ScanPolicy policy)
     {
         if (NormalizePath(path).Equals(NormalizePath(rootPath), StringComparison.OrdinalIgnoreCase))
             return false;
 
         var name = Path.GetFileName(path);
-        return FileScanSkipDirs.Contains(name);
+        if (AlwaysSkipDirs.Contains(name))
+            return true;
+
+        return !policy.IncludeGeneratedFolders && FileScanSkipDirs.Contains(name);
     }
 
     private static string NormalizePath(string path)
@@ -475,7 +503,7 @@ public static class FileScanner
         return $"{riskReason}, {extraReason}";
     }
 
-    private static (int Score, string Level, string Reason) ComputeRisk(FileInfo info, bool isInUse)
+    private static (int Score, string Level, string Reason) ComputeRisk(FileInfo info, bool isInUse, ScanPolicy policy)
     {
         var score = 50;
         var reasons = new List<string>();
@@ -484,6 +512,8 @@ public static class FileScanner
         var isImportant = IsImportantFile(info);
         var isDeleteCandidate = DeleteCandidateExts.Contains(ext);
         var isProtectedPath = IsProtectedSystemPath(path);
+        var isDownloadsPath = path.Contains("\\Users\\", StringComparison.OrdinalIgnoreCase)
+            && path.Contains("\\Downloads\\", StringComparison.OrdinalIgnoreCase);
 
         var unusedDays = Math.Max(0, (DateTime.Now - info.LastAccessTime).TotalDays);
         if (unusedDays >= 365) { score -= 30; reasons.Add("오래 사용 안 함"); }
@@ -519,7 +549,28 @@ public static class FileScanner
         }
 
         if (isDeleteCandidate) { score -= 20; reasons.Add("임시/로그 계열 확장자"); }
-        if (isImportant) { score += 20; reasons.Add("문서/코드/프로젝트 중요 파일"); }
+        if (isImportant && policy.ProtectProjectFiles) { score += 20; reasons.Add("문서/코드/프로젝트 중요 파일"); }
+
+        if (policy.PreferDownloadCleanup
+            && isDownloadsPath
+            && DownloadCleanupExts.Contains(ext)
+            && unusedDays >= 30
+            && !isImportant)
+        {
+            score -= unusedDays >= 180 ? 18 : 10;
+            reasons.Add("오래된 다운로드 파일");
+        }
+
+        if (policy.PreferLargeOldFiles
+            && LargeReviewExts.Contains(ext)
+            && info.Length >= 500_000_000
+            && unusedDays >= 90
+            && !isImportant
+            && !isProtectedPath)
+        {
+            score -= 14;
+            reasons.Add("대용량 정리 후보");
+        }
 
         if (isProtectedPath)
         {
@@ -527,9 +578,7 @@ public static class FileScanner
             reasons.Add("시스템 경로");
         }
 
-        if (path.Contains("\\Users\\", StringComparison.OrdinalIgnoreCase)
-            && path.Contains("\\Downloads\\", StringComparison.OrdinalIgnoreCase)
-            && isDeleteCandidate)
+        if (isDownloadsPath && isDeleteCandidate)
         {
             score -= 8;
             reasons.Add("다운로드 폴더 임시파일");

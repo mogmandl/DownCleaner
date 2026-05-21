@@ -15,8 +15,8 @@
         <shell:TaskbarItemInfo ProgressState="Normal" ProgressValue="0"/>
     </Window.TaskbarItemInfo>
 
-    <Border Background="White"
-            BorderBrush="#DADADA"
+    <Border Background="#171A21"
+            BorderBrush="#343B48"
             BorderThickness="1"
             CornerRadius="8"
             Padding="24">
@@ -31,11 +31,11 @@
             <TextBlock Text="DownCleaner"
                        FontSize="24"
                        FontWeight="SemiBold"
-                       Foreground="#222"/>
+                       Foreground="#F3F6FA"/>
             <TextBlock Grid.Row="1"
                        Text="즐겨찾기 폴더를 미리 분석하는 중입니다."
                        Margin="0,8,0,0"
-                       Foreground="#555"
+                       Foreground="#AEB7C4"
                        FontSize="13"/>
             <ProgressBar x:Name="LoadingProgressBar"
                          Grid.Row="2"
@@ -43,12 +43,14 @@
                          Minimum="0"
                          Maximum="100"
                          Value="0"
+                         Foreground="#60CDFF"
+                         Background="#252A33"
                          IsIndeterminate="False"
                          VerticalAlignment="Center"/>
             <TextBlock x:Name="StatusText"
                        Grid.Row="3"
                        Text="시작 준비 중..."
-                       Foreground="#666"
+                       Foreground="#AEB7C4"
                        FontSize="12"
                        TextWrapping="Wrap"/>
         </Grid>

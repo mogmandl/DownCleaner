@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using FileCleaner.Models;
 using FileCleaner.ViewModels;
@@ -11,6 +13,9 @@ namespace FileCleaner;
 
 public partial class MainWindow : Window
 {
+    private const int DwmWindowAttributeUseImmersiveDarkMode = 20;
+    private const int DwmWindowAttributeUseImmersiveDarkModeBefore20H1 = 19;
+
     private MainViewModel VM => (MainViewModel)DataContext;
     private bool _isPreviewViewportDragging;
     private System.Windows.Point _lastPreviewViewportPoint;
@@ -23,7 +28,34 @@ public partial class MainWindow : Window
     public MainWindow(MainViewModel viewModel)
     {
         InitializeComponent();
+        SourceInitialized += (_, _) => ApplyDarkTitleBar();
         DataContext = viewModel;
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    private void ApplyDarkTitleBar()
+    {
+        if (Environment.OSVersion.Version.Major < 10)
+            return;
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        var enabled = 1;
+        var result = DwmSetWindowAttribute(
+            hwnd,
+            DwmWindowAttributeUseImmersiveDarkMode,
+            ref enabled,
+            sizeof(int));
+
+        if (result != 0)
+        {
+            DwmSetWindowAttribute(
+                hwnd,
+                DwmWindowAttributeUseImmersiveDarkModeBefore20H1,
+                ref enabled,
+                sizeof(int));
+        }
     }
 
     private async void FolderTreeView_SelectedItemChanged(
