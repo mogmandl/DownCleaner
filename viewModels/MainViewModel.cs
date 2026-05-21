@@ -20,6 +20,8 @@ namespace FileCleaner.ViewModels;
 
 public class MainViewModel : INotifyPropertyChanged
 {
+    private const int LowRiskCandidateLimit = 40;
+
     private string _status = "폴더를 선택하거나 추가하세요.";
     private string _operationDetail = "";
     private bool _isScanning;
@@ -29,7 +31,6 @@ public class MainViewModel : INotifyPropertyChanged
     private CancellationTokenSource? _cts;
     private string _currentScanRootPath = "";
     private string _currentScanRootName = "";
-    private int _selectedFileRefreshVersion;
     private int _activeOperationId;
     private bool _suspendSelectionInfoRefresh;
     private bool _selectionInfoRefreshPending;
@@ -95,7 +96,6 @@ public class MainViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(SelectedEntryInfo));
             OnPropertyChanged(nameof(SelectedEntryDetail));
             UpdatePreview();
-            _ = RefreshSelectedFileMetadataAsync(value, ++_selectedFileRefreshVersion);
         }
     }
 
@@ -226,7 +226,7 @@ public class MainViewModel : INotifyPropertyChanged
 
             return SelectedFile == null
                 ? ""
-                : $"{SelectedFile.FileSizeDisplay} | {SelectedFile.RiskLevel} | {SelectedFile.AssociatedProgram}";
+                : $"{SelectedFile.FileSizeDisplay} | {SelectedFile.RiskDisplay} | {SelectedFile.AssociatedProgram}";
         }
     }
 
@@ -310,6 +310,13 @@ public class MainViewModel : INotifyPropertyChanged
     {
         if (e.PropertyName == nameof(FileItem.IsSelected))
             RequestSelectionInfoRefresh();
+
+        if (e.PropertyName == nameof(FileItem.RiskScore)
+            || e.PropertyName == nameof(FileItem.IsInUse)
+            || e.PropertyName == nameof(FileItem.NeedsUsageCheck))
+        {
+            RefreshRiskDistribution();
+        }
     }
 
     private void DeleteList_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -331,13 +338,16 @@ public class MainViewModel : INotifyPropertyChanged
         StatusMessage = "새로고침 완료";
     }
 
-    public async Task PreloadFavoriteFoldersAsync(IProgress<string>? progress = null, CancellationToken ct = default)
+    public async Task PreloadFavoriteFoldersAsync(IProgress<LoadingProgress>? progress = null, CancellationToken ct = default)
     {
         if (FavoriteFolders.Count == 0)
+        {
+            progress?.Report(new LoadingProgress("사전 분석할 즐겨찾기 폴더가 없습니다.", 100));
             return;
+        }
 
         _preloadedScans.Clear();
-        progress?.Report($"시작 준비 중... 즐겨찾기 폴더 {FavoriteFolders.Count}개 분석 준비");
+        progress?.Report(new LoadingProgress($"시작 준비 중... 즐겨찾기 폴더 {FavoriteFolders.Count}개 분석 준비", 0));
 
         for (var i = 0; i < FavoriteFolders.Count; i++)
         {
@@ -349,8 +359,11 @@ public class MainViewModel : INotifyPropertyChanged
 
             try
             {
-                progress?.Report($"사전 분석 중 ({i + 1}/{FavoriteFolders.Count}): {folder.Name}");
-                var scanProgress = new Progress<string>(message => progress?.Report($"{folder.Name}: {message}"));
+                var startPercent = (double)i / FavoriteFolders.Count * 100;
+                var endPercent = (double)(i + 1) / FavoriteFolders.Count * 100;
+                progress?.Report(new LoadingProgress($"사전 분석 중 ({i + 1}/{FavoriteFolders.Count}): {folder.Name}", startPercent));
+                var scanProgress = new Progress<string>(message =>
+                    progress?.Report(new LoadingProgress($"{folder.Name}: {message}", startPercent)));
                 var includeSubfolders = Settings.DefaultScanMode == "Quick"
                     ? false
                     : Settings.IncludeSubfolders;
@@ -358,6 +371,7 @@ public class MainViewModel : INotifyPropertyChanged
 
                 ApplyLearnedRecommendations(files);
                 _preloadedScans[folder.FullPath] = files;
+                progress?.Report(new LoadingProgress($"사전 분석 완료 ({i + 1}/{FavoriteFolders.Count}): {folder.Name}", endPercent));
             }
             catch (OperationCanceledException)
             {
@@ -369,7 +383,7 @@ public class MainViewModel : INotifyPropertyChanged
             }
         }
 
-        progress?.Report("시작 준비 완료");
+        progress?.Report(new LoadingProgress("시작 준비 완료", 100));
     }
 
     private void LoadDriveInfo()
@@ -713,11 +727,14 @@ public class MainViewModel : INotifyPropertyChanged
 
     private void SelectDangerous()
     {
+        var limit = Math.Min(Settings.AutoSelectRiskThreshold, LowRiskCandidateLimit);
         PerformSelectionInfoBatch(() =>
         {
             foreach (var file in CurrentFiles)
-                file.IsSelected = file.RiskScore < Settings.AutoSelectRiskThreshold && !file.IsInUse;
+                file.IsSelected = IsLowRiskDeletionCandidate(file, limit);
         });
+
+        StatusMessage = $"낮음 등급 삭제 후보만 선택했습니다. 기준: {limit}점 미만";
     }
 
     private void UpdateInfo()
@@ -777,6 +794,35 @@ public class MainViewModel : INotifyPropertyChanged
 
     private void AddToDeleteList()
     {
+        var selectedFiles = CurrentFiles.Where(file => file.IsSelected).ToList();
+        var safeCandidates = selectedFiles
+            .Where(file => IsLowRiskDeletionCandidate(file, LowRiskCandidateLimit))
+            .ToList();
+        var reviewRequired = selectedFiles.Except(safeCandidates).ToList();
+
+        if (reviewRequired.Count > 0)
+        {
+            var preview = string.Join("\n", reviewRequired.Take(5).Select(file => $"  - {file.FileName} ({file.RiskDisplay})"));
+            if (reviewRequired.Count > 5)
+                preview += $"\n  ... 외 {reviewRequired.Count - 5}개";
+
+            var result = System.Windows.MessageBox.Show(
+                $"선택 항목 중 중간/높음 또는 사용 중 파일 {reviewRequired.Count}개가 포함되어 있습니다.\n\n{preview}\n\n이 파일들도 삭제 목록에 포함할까요?",
+                "삭제 목록 추가 확인",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Warning);
+
+            if (result == MessageBoxResult.Cancel)
+            {
+                StatusMessage = "삭제 목록 추가를 취소했습니다.";
+                return;
+            }
+
+            selectedFiles = result == MessageBoxResult.Yes
+                ? selectedFiles
+                : safeCandidates;
+        }
+
         var added = 0;
         var existingPaths = DeleteList
             .Select(file => file.FilePath)
@@ -784,7 +830,7 @@ public class MainViewModel : INotifyPropertyChanged
 
         PerformDeleteListBatch(() =>
         {
-            foreach (var file in CurrentFiles.Where(file => file.IsSelected))
+            foreach (var file in selectedFiles)
             {
                 if (!existingPaths.Add(file.FilePath))
                     continue;
@@ -796,6 +842,10 @@ public class MainViewModel : INotifyPropertyChanged
 
         StatusMessage = $"삭제 목록에 {added}개 추가됨 (총 {DeleteList.Count}개)";
     }
+
+    private static bool IsLowRiskDeletionCandidate(FileItem file, int limit)
+        => file.RiskScore < Math.Min(limit, LowRiskCandidateLimit)
+            && !file.IsInUse;
 
     private void ClearDeleteList()
     {
@@ -829,7 +879,6 @@ public class MainViewModel : INotifyPropertyChanged
 
         try
         {
-            await EnsureUsageCheckedAsync(targets);
             var inUseTargets = targets.Where(file => file.IsInUse).ToList();
             if (inUseTargets.Count > 0)
             {
@@ -883,69 +932,6 @@ public class MainViewModel : INotifyPropertyChanged
         finally
         {
             EndBusy(operationId);
-        }
-    }
-
-    private async Task RefreshSelectedFileMetadataAsync(FileItem? file, int refreshVersion)
-    {
-        if (file == null || !file.NeedsUsageCheck)
-            return;
-
-        var metadata = await ResolveFileMetadataAsync(file);
-        if (refreshVersion != _selectedFileRefreshVersion || !ReferenceEquals(file, SelectedFile))
-            return;
-
-        ApplyResolvedMetadata(file, metadata);
-    }
-
-    private async Task EnsureUsageCheckedAsync(IReadOnlyCollection<FileItem> files)
-    {
-        var pendingFiles = files.Where(file => file.NeedsUsageCheck).ToList();
-        if (pendingFiles.Count == 0)
-            return;
-
-        IsProgressIndeterminate = false;
-        for (var i = 0; i < pendingFiles.Count; i++)
-        {
-            ScanProgress = (double)(i + 1) / pendingFiles.Count * 100;
-            ReportOperation($"사용 여부 확인 중... {i + 1}/{pendingFiles.Count}");
-
-            var file = pendingFiles[i];
-            var metadata = await ResolveFileMetadataAsync(file);
-            ApplyResolvedMetadata(file, metadata);
-        }
-    }
-
-    private async Task<(bool Success, bool IsInUse, int RiskScore, string RiskLevel, string RiskReason, string AssociatedProgram)>
-        ResolveFileMetadataAsync(FileItem file)
-    {
-        return await Task.Run(() =>
-        {
-            if (!FileScanner.TryResolveDeferredMetadata(file.FilePath, file.AssociatedProgram, out var metadata))
-                return (false, false, 0, "", "", file.AssociatedProgram);
-
-            return (true, metadata.IsInUse, metadata.RiskScore, metadata.RiskLevel, metadata.RiskReason, metadata.AssociatedProgram);
-        });
-    }
-
-    private void ApplyResolvedMetadata(
-        FileItem file,
-        (bool Success, bool IsInUse, int RiskScore, string RiskLevel, string RiskReason, string AssociatedProgram) metadata)
-    {
-        file.NeedsUsageCheck = false;
-        if (metadata.Success)
-        {
-            file.IsInUse = metadata.IsInUse;
-            file.RiskScore = metadata.RiskScore;
-            file.RiskLevel = metadata.RiskLevel;
-            file.RiskReason = metadata.RiskReason;
-            file.AssociatedProgram = metadata.AssociatedProgram;
-        }
-
-        if (ReferenceEquals(file, SelectedFile))
-        {
-            OnPropertyChanged(nameof(SelectedEntryInfo));
-            OnPropertyChanged(nameof(SelectedEntryDetail));
         }
     }
 
@@ -1019,8 +1005,8 @@ public class MainViewModel : INotifyPropertyChanged
         var total = Math.Max(1, CurrentFiles.Count);
         var groups = new[]
         {
-            new { Label = "삭제 후보", Count = CurrentFiles.Count(f => f.RiskScore < Settings.AutoSelectRiskThreshold && !f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(33, 150, 243)) },
-            new { Label = "주의", Count = CurrentFiles.Count(f => f.RiskScore >= Settings.AutoSelectRiskThreshold && f.RiskScore < 70), Brush = new SolidColorBrush(Color.FromRgb(255, 193, 7)) },
+            new { Label = "삭제 후보", Count = CurrentFiles.Count(f => f.RiskScore < LowRiskCandidateLimit && !f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(33, 150, 243)) },
+            new { Label = "주의", Count = CurrentFiles.Count(f => f.RiskScore >= LowRiskCandidateLimit && f.RiskScore < 70 && !f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(255, 193, 7)) },
             new { Label = "보존 권장", Count = CurrentFiles.Count(f => f.RiskScore >= 70 || f.IsInUse), Brush = new SolidColorBrush(Color.FromRgb(244, 67, 54)) }
         };
 
@@ -1080,6 +1066,34 @@ public class MainViewModel : INotifyPropertyChanged
         {
             StatusMessage = "삭제 목록에 추가할 파일이 없습니다.";
             return;
+        }
+
+        var safeCandidates = files
+            .Where(file => IsLowRiskDeletionCandidate(file, LowRiskCandidateLimit))
+            .ToList();
+        var reviewRequired = files.Except(safeCandidates).ToList();
+
+        if (reviewRequired.Count > 0)
+        {
+            var preview = string.Join("\n", reviewRequired.Take(5).Select(file => $"  - {file.FileName} ({file.RiskDisplay})"));
+            if (reviewRequired.Count > 5)
+                preview += $"\n  ... 외 {reviewRequired.Count - 5}개";
+
+            var result = System.Windows.MessageBox.Show(
+                $"이 폴더/항목에는 중간/높음 또는 사용 중 파일 {reviewRequired.Count}개가 포함되어 있습니다.\n\n{preview}\n\n이 파일들도 삭제 목록에 포함할까요?",
+                "삭제 목록 추가 확인",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Warning);
+
+            if (result == MessageBoxResult.Cancel)
+            {
+                StatusMessage = "삭제 목록 추가를 취소했습니다.";
+                return;
+            }
+
+            files = result == MessageBoxResult.Yes
+                ? files
+                : safeCandidates;
         }
 
         var existingPaths = DeleteList
@@ -1296,6 +1310,7 @@ public class MainViewModel : INotifyPropertyChanged
         }
 
         rootNode.SortRecursive();
+        rootNode.CompactSingleFolderChains();
         return rootNode;
     }
 

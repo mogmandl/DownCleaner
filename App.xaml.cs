@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Windows;
 using System.Windows.Threading;
+using FileCleaner.Models;
 using FileCleaner.Services;
 using FileCleaner.ViewModels;
 
@@ -26,13 +27,14 @@ public partial class App : System.Windows.Application
         var viewModel = new MainViewModel();
         try
         {
-            var progress = new Progress<string>(loadingWindow.SetStatus);
+            var progress = new Progress<LoadingProgress>(loadingWindow.SetProgress);
             await viewModel.PreloadFavoriteFoldersAsync(progress);
+            loadingWindow.SetComplete("시작 준비 완료");
         }
         catch (Exception ex)
         {
             ErrorLogService.LogException("Startup Preload", ex);
-            loadingWindow.SetStatus("사전 분석 중 오류가 발생했습니다. 기본 화면을 엽니다.");
+            loadingWindow.SetError("사전 분석 중 오류가 발생했습니다. 기본 화면을 엽니다.");
             await System.Threading.Tasks.Task.Delay(600);
         }
 

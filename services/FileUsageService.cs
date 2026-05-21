@@ -1,11 +1,12 @@
 ﻿using System.IO;
+using System.Collections.Concurrent;
 using Microsoft.Win32;
 
 namespace FileCleaner.Services;
 
 public static class FileUsageService
 {
-    private static readonly Dictionary<string, string> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, string> _cache = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly Dictionary<string, string> Known = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -58,7 +59,7 @@ public static class FileUsageService
 
         if (Known.TryGetValue(extension, out var known))
         {
-            _cache[extension] = known;
+            _cache.TryAdd(extension, known);
             return known;
         }
 
@@ -93,7 +94,7 @@ public static class FileUsageService
         }
         catch { }
 
-        _cache[extension] = result;
+        _cache.TryAdd(extension, result);
         return result;
     }
 
@@ -104,12 +105,12 @@ public static class FileUsageService
 
         if (Known.TryGetValue(extension, out var known))
         {
-            _cache[extension] = known;
+            _cache.TryAdd(extension, known);
             return known;
         }
 
         var result = $"{extension} 파일";
-        _cache[extension] = result;
+        _cache.TryAdd(extension, result);
         return result;
     }
 

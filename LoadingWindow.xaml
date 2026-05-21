@@ -1,6 +1,7 @@
 <Window x:Class="FileCleaner.LoadingWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="DownCleaner 시작 중"
         Width="460"
         Height="220"
@@ -9,7 +10,11 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
-        ShowInTaskbar="False">
+        ShowInTaskbar="True">
+    <Window.TaskbarItemInfo>
+        <shell:TaskbarItemInfo ProgressState="Normal" ProgressValue="0"/>
+    </Window.TaskbarItemInfo>
+
     <Border Background="White"
             BorderBrush="#DADADA"
             BorderThickness="1"
@@ -32,9 +37,13 @@
                        Margin="0,8,0,0"
                        Foreground="#555"
                        FontSize="13"/>
-            <ProgressBar Grid.Row="2"
+            <ProgressBar x:Name="LoadingProgressBar"
+                         Grid.Row="2"
                          Height="12"
-                         IsIndeterminate="True"
+                         Minimum="0"
+                         Maximum="100"
+                         Value="0"
+                         IsIndeterminate="False"
                          VerticalAlignment="Center"/>
             <TextBlock x:Name="StatusText"
                        Grid.Row="3"

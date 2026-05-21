@@ -293,7 +293,7 @@
                                                            Margin="6,0,0,0"/>
 
                                                 <TextBlock Grid.Column="3"
-                                                           Text="{Binding File.RiskLevel}"
+                                                           Text="{Binding File.RiskDisplay}"
                                                            Foreground="{Binding File.RiskBrush}"
                                                            FontWeight="SemiBold"
                                                            VerticalAlignment="Center"
@@ -492,7 +492,7 @@
                                                    Margin="6,0,0,0"/>
 
                                         <TextBlock Grid.Column="3"
-                                                   Text="{Binding File.RiskLevel}"
+                                                   Text="{Binding File.RiskDisplay}"
                                                    Foreground="{Binding File.RiskBrush}"
                                                    FontWeight="SemiBold"
                                                    VerticalAlignment="Center"
@@ -727,9 +727,9 @@
                         <GroupBox Header="추천 및 스캔" Margin="0,0,0,12">
                             <StackPanel Margin="10">
                                 <TextBlock Text="자동 선택 기준 점수" FontWeight="SemiBold"/>
-                                <Slider Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"
+                                <Slider Minimum="0" Maximum="40" TickFrequency="5" IsSnapToTickEnabled="True"
                                         Value="{Binding Settings.AutoSelectRiskThreshold, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Text="{Binding Settings.AutoSelectRiskThreshold, StringFormat=현재 기준: {0}점 미만}" Foreground="#555" Margin="0,0,0,10"/>
+                                <TextBlock Text="{Binding Settings.AutoSelectRiskThreshold, StringFormat=현재 기준: 낮음 등급 중 {0}점 미만}" Foreground="#555" Margin="0,0,0,10"/>
 
                                 <TextBlock Text="기본 스캔 모드" FontWeight="SemiBold"/>
                                 <ComboBox ItemsSource="{Binding ScanModes}"

@@ -49,6 +49,9 @@ public static class RecommendationProfileService
 
         foreach (var file in files)
         {
+            if (FileScanner.IsProtectedSystemPath(file.FilePath))
+                continue;
+
             var ext = Path.GetExtension(file.FilePath);
             if (string.IsNullOrWhiteSpace(ext))
                 ext = "(no extension)";
@@ -77,13 +80,7 @@ public static class RecommendationProfileService
             var adjustment = Math.Min(MaxAdjustment, 4 + count * 2);
             file.RiskScore = Math.Clamp(file.RiskScore - adjustment, 0, 100);
             file.RiskReason = AppendReason(file.RiskReason, $"삭제 이력 반영: {ext}");
-
-            if (file.RiskScore < 40)
-                file.RiskLevel = "낮음 (삭제 후보)";
-            else if (file.RiskScore < 70)
-                file.RiskLevel = "중간";
-            else
-                file.RiskLevel = "높음 (삭제 주의)";
+            file.RiskLevel = FileItem.GetRiskLevel(file.RiskScore);
         }
     }
 

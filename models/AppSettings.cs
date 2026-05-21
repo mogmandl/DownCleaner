@@ -16,7 +16,7 @@ public class AppSettings : INotifyPropertyChanged
         get => _autoSelectRiskThreshold;
         set
         {
-            var next = Math.Clamp(value, 0, 100);
+            var next = Math.Clamp(value, 0, 40);
             if (_autoSelectRiskThreshold == next) return;
             _autoSelectRiskThreshold = next;
             OnPropertyChanged();

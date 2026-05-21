@@ -24,7 +24,6 @@ public class FileItem : INotifyPropertyChanged
     private long _fileSize;
     private DateTime _lastModified;
     private DateTime _lastAccessed;
-    private string _riskLevel = "";
     private int _riskScore;
     private string _riskReason = "";
     private string _associatedProgram = "";
@@ -74,15 +73,34 @@ public class FileItem : INotifyPropertyChanged
 
     public string RiskLevel
     {
-        get => _riskLevel;
-        set { _riskLevel = value; OnPropertyChanged(); OnPropertyChanged(nameof(RiskBrush)); }
+        get => GetRiskLevel(RiskScore);
+        set
+        {
+            // Kept for compatibility with existing scanner code. The displayed
+            // level is always derived from RiskScore to avoid stale labels.
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(RiskBrush));
+            OnPropertyChanged(nameof(RiskDisplay));
+        }
     }
 
     public int RiskScore
     {
         get => _riskScore;
-        set { _riskScore = value; OnPropertyChanged(); }
+        set
+        {
+            var next = Math.Clamp(value, 0, 100);
+            if (_riskScore == next) return;
+
+            _riskScore = next;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(RiskLevel));
+            OnPropertyChanged(nameof(RiskBrush));
+            OnPropertyChanged(nameof(RiskDisplay));
+        }
     }
+
+    public string RiskDisplay => $"{RiskLevel} ({RiskScore}점)";
 
     public string RiskReason
     {
@@ -105,7 +123,16 @@ public class FileItem : INotifyPropertyChanged
     public bool NeedsUsageCheck
     {
         get => _needsUsageCheck;
-        set { _needsUsageCheck = value; OnPropertyChanged(); }
+        set
+        {
+            if (_needsUsageCheck == value) return;
+
+            _needsUsageCheck = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(RiskLevel));
+            OnPropertyChanged(nameof(RiskBrush));
+            OnPropertyChanged(nameof(RiskDisplay));
+        }
     }
 
     public bool IsPreviewSupported
@@ -138,6 +165,17 @@ public class FileItem : INotifyPropertyChanged
         "높음 (삭제 주의)" => HighRiskBrush,
         _ => NeutralRiskBrush
     };
+
+    public static string GetRiskLevel(int riskScore)
+    {
+        var score = Math.Clamp(riskScore, 0, 100);
+        return score switch
+        {
+            >= 70 => "높음 (삭제 주의)",
+            >= 40 => "중간",
+            _ => "낮음 (삭제 후보)"
+        };
+    }
 
     private static System.Windows.Media.Brush CreateBrush(byte r, byte g, byte b)
     {

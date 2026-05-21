@@ -111,6 +111,36 @@ public class CleanupNode : INotifyPropertyChanged
             Children.Add(child);
     }
 
+    public void CompactSingleFolderChains()
+    {
+        foreach (var child in Children.ToList())
+            child.CompactSelf();
+    }
+
+    private void CompactSelf()
+    {
+        foreach (var child in Children.ToList())
+            child.CompactSelf();
+
+        while (IsFolder && Children.Count == 1 && Children[0].IsFolder)
+        {
+            var onlyChild = Children[0];
+            Name = $"{Name}\\{onlyChild.Name}";
+            FullPath = onlyChild.FullPath;
+            IsExpanded = onlyChild.IsExpanded;
+            _totalSize = onlyChild._totalSize;
+            _descendantFolderCount = onlyChild._descendantFolderCount;
+            _descendantFileCount = onlyChild._descendantFileCount;
+
+            Children.Clear();
+            foreach (var grandChild in onlyChild.Children.ToList())
+            {
+                grandChild.Parent = this;
+                Children.Add(grandChild);
+            }
+        }
+    }
+
     private void SetSelected(bool value, bool propagateToChildren)
     {
         if (IsFolder)
@@ -181,6 +211,17 @@ public class CleanupNode : INotifyPropertyChanged
             Parent?.RefreshSelectionFromChildren();
         }
 
+        if (e.PropertyName == nameof(FileItem.RiskScore)
+            || e.PropertyName == nameof(FileItem.RiskLevel)
+            || e.PropertyName == nameof(FileItem.RiskDisplay)
+            || e.PropertyName == nameof(FileItem.RiskReason)
+            || e.PropertyName == nameof(FileItem.AssociatedProgram)
+            || e.PropertyName == nameof(FileItem.IsInUse)
+            || e.PropertyName == nameof(FileItem.NeedsUsageCheck))
+        {
+            OnPropertyChanged(nameof(DetailText));
+        }
+
         if (e.PropertyName == nameof(FileItem.FileSize))
         {
             var newSize = File?.FileSize ?? 0;
@@ -201,11 +242,11 @@ public class CleanupNode : INotifyPropertyChanged
             return "";
 
         if (File.IsInUse)
-            return $"{File.RiskLevel} · 사용 중";
+            return $"{File.RiskDisplay} · 사용 중";
 
         return string.IsNullOrWhiteSpace(File.AssociatedProgram)
-            ? File.RiskLevel
-            : $"{File.RiskLevel} · {File.AssociatedProgram}";
+            ? File.RiskDisplay
+            : $"{File.RiskDisplay} · {File.AssociatedProgram}";
     }
 
     protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)

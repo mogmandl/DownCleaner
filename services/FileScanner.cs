@@ -1,5 +1,6 @@
 ﻿using System.IO;
 using System.Linq;
+using System.Collections.Concurrent;
 using FileCleaner.Models;
 
 namespace FileCleaner.Services;
@@ -40,18 +41,45 @@ public static class FileScanner
         "Library", "PackageCache", "Temp", "Logs", "UserSettings"
     };
 
-    private static readonly TimeSpan FastScanThreshold = TimeSpan.FromSeconds(2);
-    private const int FastScanEvaluationStartCount = 250;
+    private static readonly HashSet<string> FileScanSkipDirs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".git", ".vs", "node_modules", "packages", "bin", "obj", ".next",
+        "dist", "build", "target", "__pycache__", ".venv", "venv",
+        "Library", "PackageCache", "Temp", "Logs", "UserSettings"
+    };
 
     private static readonly HashSet<string> DeleteCandidateExts = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".tmp", ".temp", ".log", ".bak", ".old", ".dmp", ".cache", ".crdownload", ".part"
+        ".tmp", ".temp", ".log", ".bak", ".old", ".dmp", ".cache", ".crdownload", ".part",
+        ".download", ".etl", ".trace", ".swp", ".swo", ".tmp~"
     };
 
     private static readonly HashSet<string> ImportantExts = new(StringComparer.OrdinalIgnoreCase)
     {
         ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf", ".txt", ".md",
-        ".cs", ".java", ".py", ".js", ".ts", ".cpp", ".h", ".sql", ".ps1", ".csproj", ".sln"
+        ".rtf", ".odt", ".ods", ".odp", ".csv",
+        ".cs", ".fs", ".vb", ".java", ".kt", ".kts", ".py", ".ipynb", ".js", ".jsx",
+        ".ts", ".tsx", ".vue", ".svelte", ".html", ".htm", ".css", ".scss", ".sass",
+        ".less", ".cpp", ".cxx", ".cc", ".c", ".h", ".hpp", ".hh", ".go", ".rs",
+        ".php", ".rb", ".swift", ".dart", ".r", ".m", ".mm", ".scala", ".sql",
+        ".ps1", ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd",
+        ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".config", ".conf",
+        ".csproj", ".fsproj", ".vbproj", ".vcxproj", ".sln", ".slnx", ".props", ".targets",
+        ".unity", ".prefab", ".asset", ".mat", ".controller", ".anim", ".shader", ".cginc",
+        ".fbx", ".obj", ".blend", ".stl", ".dae", ".gltf", ".glb",
+        ".psd", ".ai", ".fig", ".sketch", ".db", ".sqlite", ".sqlite3"
+    };
+
+    private static readonly HashSet<string> ImportantFileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".env", ".env.local", ".env.development", ".env.production", ".gitignore", ".gitattributes",
+        ".editorconfig", ".dockerignore", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+        "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json",
+        "jsconfig.json", "vite.config.js", "vite.config.ts", "webpack.config.js",
+        "requirements.txt", "pyproject.toml", "Pipfile", "poetry.lock", "Cargo.toml",
+        "Cargo.lock", "go.mod", "go.sum", "Gemfile", "Gemfile.lock", "composer.json",
+        "composer.lock", "pubspec.yaml", "pubspec.lock", "CMakeLists.txt", "Makefile",
+        "README", "README.md", "LICENSE", "manifest.json", "project.godot"
     };
 
     public static (bool IsProject, string ProjectType) DetectProjectType(string folder)
@@ -219,43 +247,32 @@ public static class FileScanner
         IProgress<string>? progress = null,
         CancellationToken ct = default)
     {
-        var result = new List<FileItem>();
+        var result = new ConcurrentBag<FileItem>();
 
         try
         {
             await Task.Run(() =>
             {
-                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                 var count = 0;
-                var isFastMode = false;
-
-                foreach (var p in EnumerateFilesSafely(folderPath, includeSubfolders, ct))
+                var options = new ParallelOptions
                 {
-                    ct.ThrowIfCancellationRequested();
-                    count++;
+                    CancellationToken = ct,
+                    MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount, 2, 8)
+                };
+
+                Parallel.ForEach(EnumerateFilesSafely(folderPath, includeSubfolders, ct), options, p =>
+                {
+                    options.CancellationToken.ThrowIfCancellationRequested();
+                    var currentCount = Interlocked.Increment(ref count);
 
                     try
                     {
                         var info = new FileInfo(p);
-                        if (!info.Exists) continue;
+                        if (!info.Exists) return;
 
-                        if (!isFastMode
-                            && count >= FastScanEvaluationStartCount
-                            && stopwatch.Elapsed >= FastScanThreshold)
-                        {
-                            isFastMode = true;
-                            progress?.Report("빠른 스캔 모드: 무거운 파일 점유 검사를 뒤로 미룹니다");
-                        }
-
-                        var deferUsageCheck = isFastMode;
-                        var inUse = deferUsageCheck ? false : FileUsageService.IsFileInUse(p);
+                        var inUse = FileUsageService.IsFileInUse(p);
                         var (riskScore, riskLevel, riskReason) = ComputeRisk(info, inUse);
-                        var prog = deferUsageCheck
-                            ? FileUsageService.GetAssociatedProgramFast(info.Extension)
-                            : FileUsageService.GetAssociatedProgram(info.Extension);
-
-                        if (deferUsageCheck)
-                            riskReason = AppendReason(riskReason, "빠른 스캔: 사용 여부 미확인");
+                        var prog = FileUsageService.GetAssociatedProgram(info.Extension);
 
                         result.Add(new FileItem
                         {
@@ -269,48 +286,22 @@ public static class FileScanner
                             RiskReason = riskReason,
                             AssociatedProgram = prog,
                             IsInUse = inUse,
-                            NeedsUsageCheck = deferUsageCheck
+                            NeedsUsageCheck = false
                         });
 
-                        if (count % 50 == 0)
-                            progress?.Report($"스캔 중... {count}개 처리됨");
+                        if (currentCount % 50 == 0)
+                            progress?.Report($"스캔 중... {currentCount}개 처리됨");
                     }
                     catch { }
-                }
+                });
             }, ct);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { progress?.Report($"오류: {ex.Message}"); }
 
-        return result;
-    }
-
-    public static bool TryResolveDeferredMetadata(
-        string path,
-        string existingAssociatedProgram,
-        out (bool IsInUse, int RiskScore, string RiskLevel, string RiskReason, string AssociatedProgram) metadata)
-    {
-        metadata = default;
-
-        try
-        {
-            var info = new FileInfo(path);
-            if (!info.Exists)
-                return false;
-
-            var inUse = FileUsageService.IsFileInUse(info.FullName);
-            var (riskScore, riskLevel, riskReason) = ComputeRisk(info, inUse);
-            var associatedProgram = string.IsNullOrWhiteSpace(existingAssociatedProgram)
-                ? FileUsageService.GetAssociatedProgram(info.Extension)
-                : existingAssociatedProgram;
-
-            metadata = (inUse, riskScore, riskLevel, riskReason, associatedProgram);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
+        return result
+            .OrderBy(file => file.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public static IEnumerable<string> EnumerateDirectoriesSafely(
@@ -416,6 +407,9 @@ public static class FileScanner
             {
                 ct.ThrowIfCancellationRequested();
 
+                if (ShouldSkipFileScanDirectory(directory, rootPath))
+                    continue;
+
                 if (!ShouldVisitDirectory(directory, visited))
                     continue;
 
@@ -438,6 +432,15 @@ public static class FileScanner
         }
 
         return visited.Add(NormalizePath(path));
+    }
+
+    private static bool ShouldSkipFileScanDirectory(string path, string rootPath)
+    {
+        if (NormalizePath(path).Equals(NormalizePath(rootPath), StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var name = Path.GetFileName(path);
+        return FileScanSkipDirs.Contains(name);
     }
 
     private static string NormalizePath(string path)
@@ -478,6 +481,9 @@ public static class FileScanner
         var reasons = new List<string>();
         var ext = info.Extension;
         var path = info.FullName;
+        var isImportant = IsImportantFile(info);
+        var isDeleteCandidate = DeleteCandidateExts.Contains(ext);
+        var isProtectedPath = IsProtectedSystemPath(path);
 
         var unusedDays = Math.Max(0, (DateTime.Now - info.LastAccessTime).TotalDays);
         if (unusedDays >= 365) { score -= 30; reasons.Add("오래 사용 안 함"); }
@@ -485,22 +491,45 @@ public static class FileScanner
         else if (unusedDays >= 60) { score -= 10; reasons.Add("최근 사용 이력 적음"); }
         else { score += 14; reasons.Add("최근 사용 파일"); }
 
-        if (info.Length >= 1_000_000_000) { score += 18; reasons.Add("대용량 파일"); }
-        else if (info.Length >= 300_000_000) { score += 10; reasons.Add("용량 큼"); }
-
-        if (DeleteCandidateExts.Contains(ext)) { score -= 20; reasons.Add("임시/로그 계열 확장자"); }
-        if (ImportantExts.Contains(ext)) { score += 20; reasons.Add("문서/코드 중요 확장자"); }
-
-        if (path.Contains("\\Windows\\", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("\\Program Files", StringComparison.OrdinalIgnoreCase))
+        if (info.Length >= 1_000_000_000)
         {
-            score += 30;
+            if (unusedDays >= 180 && !isImportant && !isProtectedPath)
+            {
+                score -= 12;
+                reasons.Add("오래된 대용량 파일");
+            }
+            else
+            {
+                score += 18;
+                reasons.Add("대용량 파일");
+            }
+        }
+        else if (info.Length >= 300_000_000)
+        {
+            if (unusedDays >= 180 && !isImportant && !isProtectedPath)
+            {
+                score -= 6;
+                reasons.Add("오래된 큰 파일");
+            }
+            else
+            {
+                score += 10;
+                reasons.Add("용량 큼");
+            }
+        }
+
+        if (isDeleteCandidate) { score -= 20; reasons.Add("임시/로그 계열 확장자"); }
+        if (isImportant) { score += 20; reasons.Add("문서/코드/프로젝트 중요 파일"); }
+
+        if (isProtectedPath)
+        {
+            score = Math.Max(score + 40, 85);
             reasons.Add("시스템 경로");
         }
 
         if (path.Contains("\\Users\\", StringComparison.OrdinalIgnoreCase)
             && path.Contains("\\Downloads\\", StringComparison.OrdinalIgnoreCase)
-            && DeleteCandidateExts.Contains(ext))
+            && isDeleteCandidate)
         {
             score -= 8;
             reasons.Add("다운로드 폴더 임시파일");
@@ -514,16 +543,21 @@ public static class FileScanner
 
         score = Math.Clamp(score, 0, 100);
 
-        var level = score switch
-        {
-            >= 70 => "높음 (삭제 주의)",
-            >= 40 => "중간",
-            _ => "낮음 (삭제 후보)"
-        };
+        var level = FileItem.GetRiskLevel(score);
 
         if (reasons.Count == 0)
             reasons.Add("기본 규칙 기반 평가");
 
         return (score, level, string.Join(", ", reasons.Take(3)));
     }
+
+    private static bool IsImportantFile(FileInfo info)
+        => ImportantExts.Contains(info.Extension)
+            || ImportantFileNames.Contains(info.Name);
+
+    public static bool IsProtectedSystemPath(string path)
+        => path.Contains("\\Windows\\", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("\\Program Files\\", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("\\Program Files (x86)\\", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("\\ProgramData\\", StringComparison.OrdinalIgnoreCase);
 }
