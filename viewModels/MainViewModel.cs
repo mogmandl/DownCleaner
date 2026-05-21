@@ -362,11 +362,10 @@ public class MainViewModel : INotifyPropertyChanged
             {
                 progress?.Report($"사전 분석 중 ({i + 1}/{FavoriteFolders.Count}): {folder.Name}");
                 var scanProgress = new Progress<string>(message => progress?.Report($"{folder.Name}: {message}"));
-                var files = Settings.DefaultScanMode == "Detailed"
-                    ? await FileScanner.ScanFilesAsync(folder.FullPath, true, scanProgress, ct)
-                    : Settings.DefaultScanMode == "Quick"
-                        ? await FileScanner.ScanFilesAsync(folder.FullPath, false, scanProgress, ct)
-                        : await FileScanner.ScanSmartForCleanupAsync(folder.FullPath, scanProgress, ct);
+                var includeSubfolders = Settings.DefaultScanMode == "Quick"
+                    ? false
+                    : Settings.IncludeSubfolders;
+                var files = await FileScanner.ScanFilesAsync(folder.FullPath, includeSubfolders, scanProgress, ct);
 
                 ApplyLearnedRecommendations(files);
                 _preloadedScans[folder.FullPath] = files;
@@ -989,6 +988,82 @@ public class MainViewModel : INotifyPropertyChanged
 
     public void SetSelectedCleanupNode(CleanupNode? node)
         => SelectedCleanupNode = node;
+
+    public void AddCleanupNodeToDeleteList(CleanupNode? node)
+    {
+        if (node == null)
+            return;
+
+        var files = EnumerateNodeFiles(node).ToList();
+        if (files.Count == 0)
+        {
+            StatusMessage = "삭제 목록에 추가할 파일이 없습니다.";
+            return;
+        }
+
+        var existingPaths = DeleteList
+            .Select(file => file.FilePath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var added = 0;
+
+        PerformDeleteListBatch(() =>
+        {
+            foreach (var file in files)
+            {
+                file.IsSelected = true;
+                if (!existingPaths.Add(file.FilePath))
+                    continue;
+
+                DeleteList.Add(file);
+                added++;
+            }
+        });
+
+        StatusMessage = $"삭제 목록에 {added}개 추가됨 (총 {DeleteList.Count}개)";
+    }
+
+    public void RemoveCleanupNodeFromDeleteList(CleanupNode? node)
+    {
+        if (node == null)
+            return;
+
+        var removePaths = EnumerateNodeFiles(node)
+            .Select(file => file.FilePath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (removePaths.Count == 0)
+        {
+            StatusMessage = "삭제 목록에서 제거할 파일이 없습니다.";
+            return;
+        }
+
+        var removed = 0;
+        PerformDeleteListBatch(() =>
+        {
+            foreach (var file in DeleteList.Where(file => removePaths.Contains(file.FilePath)).ToList())
+            {
+                DeleteList.Remove(file);
+                removed++;
+            }
+        });
+
+        StatusMessage = $"삭제 목록에서 {removed}개 제거됨 (총 {DeleteList.Count}개)";
+    }
+
+    private static IEnumerable<FileItem> EnumerateNodeFiles(CleanupNode node)
+    {
+        if (!node.IsFolder && node.File != null)
+        {
+            yield return node.File;
+            yield break;
+        }
+
+        foreach (var child in node.Children)
+        {
+            foreach (var file in EnumerateNodeFiles(child))
+                yield return file;
+        }
+    }
 
     public void RotatePreviewModel(double deltaX, double deltaY)
     {

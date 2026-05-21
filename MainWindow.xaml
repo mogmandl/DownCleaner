@@ -8,6 +8,82 @@
         Width="1280"
         WindowStartupLocation="CenterScreen">
 
+    <Window.Resources>
+        <Style x:Key="CleanupTreeToggleStyle" TargetType="{x:Type ToggleButton}">
+            <Setter Property="Width" Value="18"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="Margin" Value="0,0,4,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <Border x:Name="ToggleBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="2">
+                            <TextBlock x:Name="Glyph"
+                                       Text="+"
+                                       FontWeight="SemiBold"
+                                       Foreground="#555"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Glyph" Property="Text" Value="-"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ToggleBorder" Property="Background" Value="#EEEEEE"/>
+                                <Setter TargetName="ToggleBorder" Property="BorderBrush" Value="#CCCCCC"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Glyph" Property="Text" Value=""/>
+                                <Setter TargetName="ToggleBorder" Property="Background" Value="Transparent"/>
+                                <Setter TargetName="ToggleBorder" Property="BorderBrush" Value="Transparent"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CleanupTreeViewItemStyle" TargetType="{x:Type TreeViewItem}">
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type TreeViewItem}">
+                        <StackPanel>
+                            <Border x:Name="HeaderBorder"
+                                    Background="Transparent"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter x:Name="PART_Header"
+                                                  ContentSource="Header"
+                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                            </Border>
+                            <ItemsPresenter x:Name="ItemsHost"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="False">
+                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="HeaderBorder" Property="Background" Value="#E3F2FD"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#999999"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -128,13 +204,15 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="48"/>
                                             <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="90"/>
-                                            <ColumnDefinition Width="180"/>
+                                            <ColumnDefinition Width="96"/>
+                                            <ColumnDefinition Width="130"/>
+                                            <ColumnDefinition Width="220"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Text="선택" FontWeight="SemiBold"/>
-                                        <TextBlock Grid.Column="1" Text="이름" FontWeight="SemiBold"/>
-                                        <TextBlock Grid.Column="2" Text="크기" FontWeight="SemiBold"/>
-                                        <TextBlock Grid.Column="3" Text="정보" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Column="1" Text="폴더 / 파일" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Column="2" Text="크기" FontWeight="SemiBold" Margin="6,0,0,0"/>
+                                        <TextBlock Grid.Column="3" Text="위험도" FontWeight="SemiBold" Margin="6,0,0,0"/>
+                                        <TextBlock Grid.Column="4" Text="정보" FontWeight="SemiBold" Margin="6,0,0,0"/>
                                     </Grid>
                                 </Border>
 
@@ -143,24 +221,33 @@
                                           ItemsSource="{Binding CurrentCleanupNodes}"
                                           SelectedItemChanged="CurrentCleanupTreeView_SelectedItemChanged"
                                           MouseDoubleClick="CurrentCleanupTreeView_MouseDoubleClick"
+                                          PreviewMouseRightButtonDown="CleanupTreeView_PreviewMouseRightButtonDown"
                                           VirtualizingStackPanel.IsVirtualizing="True"
                                           VirtualizingStackPanel.VirtualizationMode="Recycling"
                                           ScrollViewer.CanContentScroll="True"
                                           BorderThickness="0"
                                           Padding="4">
+                                    <TreeView.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="열기" Click="OpenSelectedPath_Click"/>
+                                            <MenuItem Header="파일 탐색기에서 보기" Click="ShowSelectedInExplorer_Click"/>
+                                            <MenuItem Header="경로 복사" Click="CopySelectedPath_Click"/>
+                                            <Separator/>
+                                            <MenuItem Header="삭제 목록에 추가" Click="AddSelectedNodeToDeleteList_Click"/>
+                                        </ContextMenu>
+                                    </TreeView.ContextMenu>
                                     <TreeView.ItemContainerStyle>
-                                        <Style TargetType="TreeViewItem">
-                                            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
-                                        </Style>
+                                        <Style TargetType="TreeViewItem" BasedOn="{StaticResource CleanupTreeViewItemStyle}"/>
                                     </TreeView.ItemContainerStyle>
                                     <TreeView.ItemTemplate>
                                         <HierarchicalDataTemplate DataType="{x:Type models:CleanupNode}" ItemsSource="{Binding Children}">
-                                            <Grid Margin="0,2">
+                                            <Grid Margin="0,2" HorizontalAlignment="Stretch">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="48"/>
                                                     <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="90"/>
-                                                    <ColumnDefinition Width="180"/>
+                                                    <ColumnDefinition Width="96"/>
+                                                    <ColumnDefinition Width="130"/>
+                                                    <ColumnDefinition Width="220"/>
                                                 </Grid.ColumnDefinitions>
 
                                                 <CheckBox Grid.Column="0"
@@ -168,23 +255,35 @@
                                                           VerticalAlignment="Center"
                                                           HorizontalAlignment="Center"/>
 
-                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" MinWidth="0" Margin="{Binding IndentMargin}">
+                                                    <ToggleButton Style="{StaticResource CleanupTreeToggleStyle}"
+                                                                  IsChecked="{Binding IsExpanded, Mode=TwoWay}"
+                                                                  IsEnabled="{Binding IsExpandable}"/>
                                                     <TextBlock Text="{Binding Icon}" Margin="0,0,6,0" VerticalAlignment="Center"/>
-                                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                                                 </StackPanel>
 
                                                 <TextBlock Grid.Column="2"
                                                            Text="{Binding SizeDisplay}"
-                                                           VerticalAlignment="Center"
                                                            Foreground="#555"
+                                                           VerticalAlignment="Center"
+                                                           TextAlignment="Right"
                                                            Margin="6,0,0,0"/>
 
                                                 <TextBlock Grid.Column="3"
-                                                           Text="{Binding DetailText}"
+                                                           Text="{Binding File.RiskLevel}"
+                                                           Foreground="{Binding File.RiskBrush}"
+                                                           FontWeight="SemiBold"
                                                            VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Margin="6,0,0,0"/>
+
+                                                <TextBlock Grid.Column="4"
+                                                           Text="{Binding DetailText}"
                                                            Foreground="#666"
-                                                           Margin="6,0,0,0"
-                                                           TextWrapping="Wrap"/>
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Margin="6,0,0,0"/>
                                             </Grid>
                                         </HierarchicalDataTemplate>
                                     </TreeView.ItemTemplate>
@@ -306,8 +405,8 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="48"/>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="100"/>
-                                    <ColumnDefinition Width="180"/>
+                                    <ColumnDefinition Width="96"/>
+                                    <ColumnDefinition Width="130"/>
                                     <ColumnDefinition Width="220"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="선택" FontWeight="SemiBold"/>
@@ -321,24 +420,32 @@
                         <TreeView Grid.Row="1"
                                   ItemsSource="{Binding DeleteListNodes}"
                                   SelectedItemChanged="CurrentCleanupTreeView_SelectedItemChanged"
+                                  PreviewMouseRightButtonDown="CleanupTreeView_PreviewMouseRightButtonDown"
                                   VirtualizingStackPanel.IsVirtualizing="True"
                                   VirtualizingStackPanel.VirtualizationMode="Recycling"
                                   ScrollViewer.CanContentScroll="True"
                                   BorderThickness="0"
                                   Padding="4">
+                            <TreeView.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="열기" Click="OpenSelectedPath_Click"/>
+                                    <MenuItem Header="파일 탐색기에서 보기" Click="ShowSelectedInExplorer_Click"/>
+                                    <MenuItem Header="경로 복사" Click="CopySelectedPath_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="삭제 목록에서 제거" Click="RemoveSelectedNodeFromDeleteList_Click"/>
+                                </ContextMenu>
+                            </TreeView.ContextMenu>
                             <TreeView.ItemContainerStyle>
-                                <Style TargetType="TreeViewItem">
-                                    <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
-                                </Style>
+                                <Style TargetType="TreeViewItem" BasedOn="{StaticResource CleanupTreeViewItemStyle}"/>
                             </TreeView.ItemContainerStyle>
                             <TreeView.ItemTemplate>
                                 <HierarchicalDataTemplate DataType="{x:Type models:CleanupNode}" ItemsSource="{Binding Children}">
-                                    <Grid Margin="0,2">
+                                    <Grid Margin="0,2" HorizontalAlignment="Stretch">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="48"/>
                                             <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="100"/>
-                                            <ColumnDefinition Width="180"/>
+                                            <ColumnDefinition Width="96"/>
+                                            <ColumnDefinition Width="130"/>
                                             <ColumnDefinition Width="220"/>
                                         </Grid.ColumnDefinitions>
 
@@ -347,15 +454,19 @@
                                                   VerticalAlignment="Center"
                                                   HorizontalAlignment="Center"/>
 
-                                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" MinWidth="0" Margin="{Binding IndentMargin}">
+                                            <ToggleButton Style="{StaticResource CleanupTreeToggleStyle}"
+                                                          IsChecked="{Binding IsExpanded, Mode=TwoWay}"
+                                                          IsEnabled="{Binding IsExpandable}"/>
                                             <TextBlock Text="{Binding Icon}" Margin="0,0,6,0" VerticalAlignment="Center"/>
-                                            <TextBlock Text="{Binding Name}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                                         </StackPanel>
 
                                         <TextBlock Grid.Column="2"
                                                    Text="{Binding SizeDisplay}"
                                                    Foreground="#555"
                                                    VerticalAlignment="Center"
+                                                   TextAlignment="Right"
                                                    Margin="6,0,0,0"/>
 
                                         <TextBlock Grid.Column="3"
@@ -363,13 +474,14 @@
                                                    Foreground="{Binding File.RiskBrush}"
                                                    FontWeight="SemiBold"
                                                    VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
                                                    Margin="6,0,0,0"/>
 
                                         <TextBlock Grid.Column="4"
                                                    Text="{Binding DetailText}"
                                                    Foreground="#666"
                                                    VerticalAlignment="Center"
-                                                   TextWrapping="Wrap"
+                                                   TextTrimming="CharacterEllipsis"
                                                    Margin="6,0,0,0"/>
                                     </Grid>
                                 </HierarchicalDataTemplate>

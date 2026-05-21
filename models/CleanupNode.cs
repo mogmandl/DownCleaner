@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows;
 
 namespace FileCleaner.Models;
 
@@ -21,6 +22,9 @@ public class CleanupNode : INotifyPropertyChanged
     public ObservableCollection<CleanupNode> Children { get; } = new();
 
     public string Icon => IsFolder ? "D" : "F";
+    public int Depth => Parent == null ? 0 : Parent.Depth + 1;
+    public Thickness IndentMargin => new(Depth * 18, 0, 0, 0);
+    public bool IsExpandable => Children.Count > 0;
 
     public bool IsExpanded
     {
@@ -88,6 +92,7 @@ public class CleanupNode : INotifyPropertyChanged
         child.Parent = this;
         child.PropertyChanged += Child_PropertyChanged;
         Children.Add(child);
+        OnPropertyChanged(nameof(IsExpandable));
         ApplyAggregateDelta(child.TotalSize, child.FolderContribution, child.FileContribution);
     }
 

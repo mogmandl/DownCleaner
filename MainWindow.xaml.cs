@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using FileCleaner.Models;
 using FileCleaner.ViewModels;
 
@@ -58,6 +60,65 @@ public partial class MainWindow : Window
             OpenPath(file.FilePath);
     }
 
+    private void CleanupTreeView_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject) is not { } item)
+            return;
+
+        item.Focus();
+        item.IsSelected = true;
+        VM.SetSelectedCleanupNode(item.DataContext as CleanupNode);
+        e.Handled = false;
+    }
+
+    private void OpenSelectedPath_Click(object sender, RoutedEventArgs e)
+    {
+        var path = VM.SelectedCleanupNode?.FullPath;
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        OpenPath(path);
+    }
+
+    private void ShowSelectedInExplorer_Click(object sender, RoutedEventArgs e)
+    {
+        var path = VM.SelectedCleanupNode?.FullPath;
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        ShowInExplorer(path);
+    }
+
+    private void CopySelectedPath_Click(object sender, RoutedEventArgs e)
+    {
+        var path = VM.SelectedCleanupNode?.FullPath;
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            System.Windows.Clipboard.SetText(path);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(
+                $"경로 복사 실패: {ex.Message}",
+                "오류",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private void AddSelectedNodeToDeleteList_Click(object sender, RoutedEventArgs e)
+    {
+        VM.AddCleanupNodeToDeleteList(VM.SelectedCleanupNode);
+    }
+
+    private void RemoveSelectedNodeFromDeleteList_Click(object sender, RoutedEventArgs e)
+    {
+        VM.RemoveCleanupNodeFromDeleteList(VM.SelectedCleanupNode);
+    }
+
     private static void OpenPath(string path)
     {
         try
@@ -72,6 +133,50 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
+    }
+
+    private static void ShowInExplorer(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                return;
+            }
+
+            if (Directory.Exists(path))
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+                return;
+            }
+
+            var parent = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(parent) && Directory.Exists(parent))
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{parent}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(
+                $"파일 탐색기 열기 실패: {ex.Message}",
+                "오류",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current)
+        where T : DependencyObject
+    {
+        while (current != null)
+        {
+            if (current is T match)
+                return match;
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
     }
 
     private void TabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
