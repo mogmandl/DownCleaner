@@ -6,7 +6,7 @@ namespace FileCleaner.Models;
 public class AppSettings : INotifyPropertyChanged
 {
     private int _autoSelectRiskThreshold = 40;
-    private string _defaultScanMode = "Smart";
+    private string _defaultScanMode = "Detailed";
     private bool _includeSubfolders = true;
     private bool _showDetailedProgress = true;
     private bool _preferLearnedRecommendations = true;
@@ -28,7 +28,7 @@ public class AppSettings : INotifyPropertyChanged
         get => _defaultScanMode;
         set
         {
-            var next = string.IsNullOrWhiteSpace(value) ? "Smart" : value;
+            var next = value is "Quick" or "Detailed" ? value : "Detailed";
             if (_defaultScanMode == next) return;
             _defaultScanMode = next;
             OnPropertyChanged();

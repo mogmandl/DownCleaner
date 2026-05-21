@@ -33,6 +33,13 @@ public static class FileScanner
     };
 
     private static readonly string[] ProjExts = { ".csproj", ".vcxproj", ".vbproj" };
+    private static readonly HashSet<string> ProjectScanSkipDirs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".git", ".vs", ".vscode", "bin", "obj", "node_modules", "packages",
+        ".next", "dist", "build", "target", "__pycache__", ".venv", "venv",
+        "Library", "PackageCache", "Temp", "Logs", "UserSettings"
+    };
+
     private static readonly TimeSpan FastScanThreshold = TimeSpan.FromSeconds(2);
     private const int FastScanEvaluationStartCount = 250;
 
@@ -54,9 +61,11 @@ public static class FileScanner
 
         try
         {
-            foreach (var (name, type) in DirectoryMarkers)
-                if (Directory.Exists(Path.Combine(folder, name)))
-                    return (true, type);
+            if (IsUnityProjectRoot(folder))
+                return (true, "Unity");
+
+            if (IsIgnoredProjectCandidate(folder))
+                return (false, "");
 
             foreach (var (name, type) in FileMarkers)
                 if (File.Exists(Path.Combine(folder, name)))
@@ -69,10 +78,90 @@ public static class FileScanner
             foreach (var ext in ProjExts)
                 if (HasMatchingFiles(folder, $"*{ext}"))
                     return (true, "VisualStudio");
+
+            foreach (var (name, type) in DirectoryMarkers)
+                if (Directory.Exists(Path.Combine(folder, name)))
+                    return (true, type);
         }
         catch { }
 
         return (false, "");
+    }
+
+    private static bool IsUnityProjectRoot(string folder)
+        => Directory.Exists(Path.Combine(folder, "Assets"))
+            && Directory.Exists(Path.Combine(folder, "ProjectSettings"))
+            && File.Exists(Path.Combine(folder, "Packages", "manifest.json"));
+
+    private static bool IsIgnoredProjectCandidate(string folder)
+    {
+        var current = new DirectoryInfo(folder);
+        while (current != null)
+        {
+            if (ProjectScanSkipDirs.Contains(current.Name))
+                return true;
+
+            current = current.Parent;
+        }
+
+        return false;
+    }
+
+    public static IEnumerable<(string FolderPath, string ProjectType)> FindProjectFolders(
+        string rootPath,
+        int maxDepth = 5,
+        int maxFolders = 1500,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+            yield break;
+
+        var pending = new Stack<(string Path, int Depth)>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            NormalizePath(rootPath)
+        };
+        var inspected = 0;
+
+        pending.Push((rootPath, 0));
+        while (pending.Count > 0 && inspected < maxFolders)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var (current, depth) = pending.Pop();
+            inspected++;
+
+            var (isProject, projectType) = DetectProjectType(current);
+            if (isProject)
+                yield return (current, projectType);
+
+            if (depth >= maxDepth)
+                continue;
+
+            string[] children;
+            try
+            {
+                children = Directory.GetDirectories(current);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var name = Path.GetFileName(child);
+                if (ProjectScanSkipDirs.Contains(name))
+                    continue;
+
+                if (!ShouldVisitDirectory(child, visited))
+                    continue;
+
+                pending.Push((child, depth + 1));
+            }
+        }
     }
 
     public static async Task LoadChildrenAsync(
@@ -194,70 +283,6 @@ public static class FileScanner
         catch (Exception ex) { progress?.Report($"오류: {ex.Message}"); }
 
         return result;
-    }
-
-    public static async Task<List<FileItem>> ScanSmartForCleanupAsync(
-        string rootPath,
-        IProgress<string>? progress = null,
-        CancellationToken ct = default)
-    {
-        var merged = new List<FileItem>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
-            return merged;
-
-        var (isRootProject, rootType) = DetectProjectType(rootPath);
-        if (isRootProject)
-        {
-            progress?.Report($"프로젝트 폴더 감지: {Path.GetFileName(rootPath)} [{rootType}]");
-            var files = await ScanFilesAsync(rootPath, includeSubfolders: true, progress, ct);
-            foreach (var file in files)
-            {
-                if (seen.Add(file.FilePath))
-                    merged.Add(file);
-            }
-
-            return merged;
-        }
-
-        progress?.Report($"일반 폴더 감지: {Path.GetFileName(rootPath)}");
-        var rootFiles = await ScanFilesAsync(rootPath, includeSubfolders: false, progress, ct);
-        foreach (var file in rootFiles)
-        {
-            if (seen.Add(file.FilePath))
-                merged.Add(file);
-        }
-
-        var childDirs = EnumerateDirectoriesSafely(rootPath, recursive: false, ct).ToArray();
-
-        foreach (var dir in childDirs)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            var (isProject, projectType) = DetectProjectType(dir);
-            if (isProject)
-            {
-                progress?.Report($"하위 프로젝트 감지: {Path.GetFileName(dir)} [{projectType}]");
-                var projectFiles = await ScanFilesAsync(dir, includeSubfolders: true, progress, ct);
-                foreach (var file in projectFiles)
-                {
-                    if (seen.Add(file.FilePath))
-                        merged.Add(file);
-                }
-            }
-            else
-            {
-                var bundleFiles = await ScanFilesAsync(dir, includeSubfolders: false, progress, ct);
-                foreach (var file in bundleFiles)
-                {
-                    if (seen.Add(file.FilePath))
-                        merged.Add(file);
-                }
-            }
-        }
-
-        return merged;
     }
 
     public static bool TryResolveDeferredMetadata(

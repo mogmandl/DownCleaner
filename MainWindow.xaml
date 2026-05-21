@@ -82,6 +82,37 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <Style x:Key="FolderGlyphStyle" TargetType="{x:Type TextBlock}">
+            <Setter Property="Text" Value="📁"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                    <Setter Property="Text" Value="📂"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="CleanupNodeGlyphStyle" TargetType="{x:Type TextBlock}">
+            <Setter Property="Text" Value="📄"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsFolder}" Value="True">
+                    <Setter Property="Text" Value="📁"/>
+                </DataTrigger>
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding IsFolder}" Value="True"/>
+                        <Condition Binding="{Binding IsExpanded}" Value="True"/>
+                    </MultiDataTrigger.Conditions>
+                    <Setter Property="Text" Value="📂"/>
+                </MultiDataTrigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -96,15 +127,6 @@
             <Button Command="{Binding RefreshCommand}" Padding="10,4" Content="새로고침"/>
             <Separator/>
             <Button Command="{Binding AnalyzeStorageCommand}" Padding="10,4" Content="저장공간 분석"/>
-            <ComboBox ItemsSource="{Binding FavoriteFolders}"
-                      SelectedItem="{Binding SelectedFavoriteFolder, Mode=TwoWay}"
-                      DisplayMemberPath="Name"
-                      MinWidth="210"
-                      Margin="8,0,0,0"/>
-            <Button Command="{Binding AutoCollectCandidatesCommand}"
-                    Padding="10,4"
-                    Margin="6,0,0,0"
-                    Content="즐겨찾기 자동수집"/>
         </ToolBar>
 
         <TabControl Grid.Row="1" SelectionChanged="TabControl_SelectionChanged">
@@ -138,7 +160,7 @@
                                 <TreeView.ItemTemplate>
                                     <HierarchicalDataTemplate DataType="{x:Type models:FolderNode}" ItemsSource="{Binding Children}">
                                         <StackPanel Orientation="Horizontal" Margin="2,2">
-                                            <TextBlock Text="{Binding Icon}" Margin="0,0,5,0"/>
+                                            <TextBlock Style="{StaticResource FolderGlyphStyle}"/>
                                             <TextBlock Text="{Binding Name}"/>
                                             <Border Background="#2196F3"
                                                     CornerRadius="3"
@@ -259,7 +281,7 @@
                                                     <ToggleButton Style="{StaticResource CleanupTreeToggleStyle}"
                                                                   IsChecked="{Binding IsExpanded, Mode=TwoWay}"
                                                                   IsEnabled="{Binding IsExpandable}"/>
-                                                    <TextBlock Text="{Binding Icon}" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                                    <TextBlock Style="{StaticResource CleanupNodeGlyphStyle}"/>
                                                     <TextBlock Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                                                 </StackPanel>
 
@@ -458,7 +480,7 @@
                                             <ToggleButton Style="{StaticResource CleanupTreeToggleStyle}"
                                                           IsChecked="{Binding IsExpanded, Mode=TwoWay}"
                                                           IsEnabled="{Binding IsExpandable}"/>
-                                            <TextBlock Text="{Binding Icon}" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                            <TextBlock Style="{StaticResource CleanupNodeGlyphStyle}"/>
                                             <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                                         </StackPanel>
 
@@ -578,6 +600,55 @@
                                        FontSize="11"/>
                         </DockPanel>
                     </Border>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="프로젝트 폴더">
+                <Grid Margin="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <GroupBox Header="프로젝트 분류" FontSize="13" Margin="0,0,0,12">
+                        <ItemsControl ItemsSource="{Binding ProjectTypeItems}" Margin="8">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,6">
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding Display}" Foreground="#555" FontSize="11"/>
+                                            <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                                        </DockPanel>
+                                        <ProgressBar Value="{Binding Percent}"
+                                                     Maximum="100"
+                                                     Height="16"
+                                                     Margin="0,3,0,0"
+                                                     Foreground="{Binding BarBrush}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </GroupBox>
+
+                    <GroupBox Grid.Row="1" Header="감지된 프로젝트 폴더" FontSize="13">
+                        <DataGrid ItemsSource="{Binding ProjectFolders}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="True"
+                                  GridLinesVisibility="Horizontal"
+                                  AlternatingRowBackground="#FAFAFA"
+                                  BorderThickness="1"
+                                  BorderBrush="#E0E0E0"
+                                  RowHeight="30"
+                                  EnableRowVirtualization="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="폴더명" Binding="{Binding Name}" Width="170"/>
+                                <DataGridTextColumn Header="분류" Binding="{Binding TypeDescription}" Width="180"/>
+                                <DataGridTextColumn Header="기준 폴더" Binding="{Binding SourceName}" Width="130"/>
+                                <DataGridTextColumn Header="경로" Binding="{Binding FolderPath}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </GroupBox>
                 </Grid>
             </TabItem>
 

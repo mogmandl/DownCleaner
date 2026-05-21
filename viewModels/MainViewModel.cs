@@ -41,7 +41,6 @@ public class MainViewModel : INotifyPropertyChanged
     private readonly Dictionary<string, List<FileItem>> _preloadedScans = new(StringComparer.OrdinalIgnoreCase);
     private FileItem? _selectedFile;
     private CleanupNode? _selectedCleanupNode;
-    private FolderNode? _selectedFavoriteFolder;
     private ImageSource? _previewImage;
     private string _previewText = "";
     private Model3DGroup? _previewModel;
@@ -61,12 +60,14 @@ public class MainViewModel : INotifyPropertyChanged
     public BulkObservableCollection<CleanupNode> CurrentCleanupNodes { get; } = new();
     public BulkObservableCollection<CleanupNode> DeleteListNodes { get; } = new();
     public ObservableCollection<FileItem> DeleteList { get; } = new();
+    public ObservableCollection<ProjectFolderItem> ProjectFolders { get; } = new();
+    public ObservableCollection<ChartItem> ProjectTypeItems { get; } = new();
     public ObservableCollection<DriveItem> DriveInfoList { get; } = new();
     public ObservableCollection<StorageItem> StorageItems { get; } = new();
     public ObservableCollection<ChartItem> DriveChartItems { get; } = new();
     public ObservableCollection<ChartItem> RiskDistributionItems { get; } = new();
     public ObservableCollection<ErrorHistoryItem> RecentErrors { get; } = new();
-    public IReadOnlyList<string> ScanModes { get; } = new[] { "Smart", "Detailed", "Quick" };
+    public IReadOnlyList<string> ScanModes { get; } = new[] { "Detailed", "Quick" };
 
     public AppSettings Settings
     {
@@ -114,17 +115,6 @@ public class MainViewModel : INotifyPropertyChanged
             SelectedFile = value is { IsFolder: false, File: not null } ? value.File : null;
             if (value?.IsFolder == true)
                 UpdatePreview();
-        }
-    }
-
-    public FolderNode? SelectedFavoriteFolder
-    {
-        get => _selectedFavoriteFolder;
-        set
-        {
-            if (_selectedFavoriteFolder == value) return;
-            _selectedFavoriteFolder = value;
-            OnPropertyChanged();
         }
     }
 
@@ -259,7 +249,6 @@ public class MainViewModel : INotifyPropertyChanged
     public ICommand SelectDangerousCommand { get; }
     public ICommand DeselectAllCommand { get; }
     public ICommand AddToDeleteListCommand { get; }
-    public ICommand AutoCollectCandidatesCommand { get; }
     public ICommand ClearDeleteListCommand { get; }
     public ICommand DeleteSelectedCommand { get; }
     public ICommand AnalyzeStorageCommand { get; }
@@ -279,7 +268,6 @@ public class MainViewModel : INotifyPropertyChanged
         DeselectAllCommand = new RelayCommand(() => SetAll(false));
         SelectDangerousCommand = new RelayCommand(SelectDangerous);
         AddToDeleteListCommand = new RelayCommand(AddToDeleteList);
-        AutoCollectCandidatesCommand = new AsyncRelayCommand(AutoCollectCandidatesAsync);
         ClearDeleteListCommand = new RelayCommand(ClearDeleteList);
         DeleteSelectedCommand = new AsyncRelayCommand(DeleteSelectedAsync);
         AnalyzeStorageCommand = new AsyncRelayCommand(AnalyzeStorageAsync);
@@ -338,6 +326,7 @@ public class MainViewModel : INotifyPropertyChanged
     {
         LoadDriveInfo();
         LoadQuickAccess();
+        RefreshProjectFolders();
         LoadRecentErrors();
         StatusMessage = "새로고침 완료";
     }
@@ -428,8 +417,126 @@ public class MainViewModel : INotifyPropertyChanged
                 ProjectType = rootNode.ProjectType
             });
         }
+    }
 
-        SelectedFavoriteFolder = FavoriteFolders.FirstOrDefault();
+    private void RefreshProjectFolders()
+    {
+        var found = new Dictionary<string, ProjectFolderItem>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var root in RootNodes.Where(node => !string.IsNullOrWhiteSpace(node.FullPath)))
+        {
+            AddProjectFolderIfDetected(root, root.Name, found);
+            AddLoadedProjectFolders(root, root.Name, found);
+            AddDiscoveredProjectFolders(root, found);
+        }
+
+        var ordered = found.Values
+            .OrderBy(item => item.ProjectType, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        ProjectFolders.Clear();
+        foreach (var item in ordered)
+            ProjectFolders.Add(item);
+
+        RefreshProjectTypeSummary();
+    }
+
+    private static void AddLoadedProjectFolders(
+        FolderNode node,
+        string sourceName,
+        IDictionary<string, ProjectFolderItem> found)
+    {
+        foreach (var child in node.Children.Where(child => !string.IsNullOrWhiteSpace(child.FullPath)))
+        {
+            AddProjectFolderIfDetected(child, sourceName, found);
+            AddLoadedProjectFolders(child, sourceName, found);
+        }
+    }
+
+    private static void AddDiscoveredProjectFolders(
+        FolderNode root,
+        IDictionary<string, ProjectFolderItem> found)
+    {
+        try
+        {
+            foreach (var (path, projectType) in FileScanner.FindProjectFolders(root.FullPath))
+            {
+                if (found.ContainsKey(path))
+                    continue;
+
+                found[path] = new ProjectFolderItem
+                {
+                    Name = Path.GetFileName(path) ?? path,
+                    FolderPath = path,
+                    ProjectType = projectType,
+                    SourceName = root.Name
+                };
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void AddProjectFolderIfDetected(
+        FolderNode node,
+        string sourceName,
+        IDictionary<string, ProjectFolderItem> found)
+    {
+        if (string.IsNullOrWhiteSpace(node.FullPath) || found.ContainsKey(node.FullPath))
+            return;
+
+        var projectType = node.ProjectType;
+        var isProject = node.IsProjectFolder;
+
+        if (!isProject)
+        {
+            var detected = FileScanner.DetectProjectType(node.FullPath);
+            isProject = detected.IsProject;
+            projectType = detected.ProjectType;
+        }
+
+        if (!isProject)
+            return;
+
+        found[node.FullPath] = new ProjectFolderItem
+        {
+            Name = node.Name,
+            FolderPath = node.FullPath,
+            ProjectType = projectType,
+            SourceName = sourceName
+        };
+    }
+
+    private void RefreshProjectTypeSummary()
+    {
+        ProjectTypeItems.Clear();
+
+        var total = Math.Max(1, ProjectFolders.Count);
+        Brush[] colors =
+        {
+            new SolidColorBrush(Color.FromRgb(33, 150, 243)),
+            new SolidColorBrush(Color.FromRgb(76, 175, 80)),
+            new SolidColorBrush(Color.FromRgb(255, 193, 7)),
+            new SolidColorBrush(Color.FromRgb(244, 67, 54)),
+            new SolidColorBrush(Color.FromRgb(156, 39, 176)),
+            new SolidColorBrush(Color.FromRgb(0, 188, 212))
+        };
+
+        var index = 0;
+        foreach (var group in ProjectFolders.GroupBy(item => item.ProjectType).OrderByDescending(group => group.Count()))
+        {
+            var count = group.Count();
+            ProjectTypeItems.Add(new ChartItem
+            {
+                Label = group.Key,
+                Value = count,
+                Percent = (double)count / total * 100,
+                Display = $"{count}개",
+                BarBrush = colors[index++ % colors.Length]
+            });
+        }
     }
 
     private FolderNode CreateFolderNode(string name, string fullPath)
@@ -469,6 +576,14 @@ public class MainViewModel : INotifyPropertyChanged
         var path = dialog.SelectedPath;
         var node = CreateFolderNode(Path.GetFileName(path) ?? path, path);
         RootNodes.Add(node);
+        FavoriteFolders.Add(new FolderNode
+        {
+            Name = node.Name,
+            FullPath = node.FullPath,
+            IsProjectFolder = node.IsProjectFolder,
+            ProjectType = node.ProjectType
+        });
+        RefreshProjectFolders();
 
         StatusMessage = node.IsProjectFolder
             ? $"'{node.Name}' 추가됨 [{node.ProjectType}]"
@@ -483,12 +598,41 @@ public class MainViewModel : INotifyPropertyChanged
         {
             var progress = new Progress<string>(ReportOperation);
             await FileScanner.LoadChildrenAsync(node, progress, CancellationToken.None);
+            RefreshProjectFolders();
         }
+    }
+
+    private bool TryGetPreloadedFilesForFolder(string folderPath, out List<FileItem> files)
+    {
+        files = new List<FileItem>();
+        if (string.IsNullOrWhiteSpace(folderPath))
+            return false;
+
+        var normalizedFolderPath = NormalizeDirectoryPath(folderPath);
+        if (_preloadedScans.TryGetValue(normalizedFolderPath, out var exactFiles))
+        {
+            files = exactFiles;
+            return true;
+        }
+
+        foreach (var (cachedRootPath, cachedFiles) in _preloadedScans)
+        {
+            var normalizedRootPath = NormalizeDirectoryPath(cachedRootPath);
+            if (!IsSameOrChildPath(normalizedFolderPath, normalizedRootPath))
+                continue;
+
+            files = cachedFiles
+                .Where(file => IsSameOrChildPath(file.FilePath, normalizedFolderPath))
+                .ToList();
+            return true;
+        }
+
+        return false;
     }
 
     public async Task LoadFilesForFolderAsync(FolderNode node)
     {
-        if (_preloadedScans.TryGetValue(node.FullPath, out var cachedFiles))
+        if (TryGetPreloadedFilesForFolder(node.FullPath, out var cachedFiles))
         {
             ResetScanCollections();
             ResetSelectionDetails();
@@ -518,6 +662,7 @@ public class MainViewModel : INotifyPropertyChanged
                 return;
 
             ApplyLearnedRecommendations(files);
+            _preloadedScans[node.FullPath] = files;
 
             ReportOperation($"'{node.Name}' 폴더 구조 정리 중...");
             var cleanupRoot = await Task.Run(() => BuildCleanupTree(node.Name, node.FullPath, files, ct), ct);
@@ -542,6 +687,19 @@ public class MainViewModel : INotifyPropertyChanged
         {
             EndBusy(operationId);
         }
+    }
+
+    private static string NormalizeDirectoryPath(string path)
+        => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+    private static bool IsSameOrChildPath(string path, string rootPath)
+    {
+        var normalizedPath = Path.GetFullPath(path);
+        var normalizedRoot = NormalizeDirectoryPath(rootPath);
+
+        return normalizedPath.Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase)
+            || normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || normalizedPath.StartsWith(normalizedRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     private void SetAll(bool selected)
@@ -637,83 +795,6 @@ public class MainViewModel : INotifyPropertyChanged
         });
 
         StatusMessage = $"삭제 목록에 {added}개 추가됨 (총 {DeleteList.Count}개)";
-    }
-
-    private async Task AutoCollectCandidatesAsync()
-    {
-        if (SelectedFavoriteFolder == null || string.IsNullOrWhiteSpace(SelectedFavoriteFolder.FullPath))
-        {
-            System.Windows.MessageBox.Show("즐겨찾기 폴더를 선택해주세요.", "안내", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var operationId = BeginOperation($"'{SelectedFavoriteFolder.Name}' 자동 분석 중...", indeterminate: true);
-        ResetScanCollections();
-        _currentScanRootPath = SelectedFavoriteFolder.FullPath;
-        _currentScanRootName = SelectedFavoriteFolder.Name;
-
-        try
-        {
-            ResetSelectionDetails();
-            var ct = _cts!.Token;
-            var progress = new Progress<string>(ReportOperation);
-            var files = Settings.DefaultScanMode == "Detailed"
-                ? await FileScanner.ScanFilesAsync(SelectedFavoriteFolder.FullPath, true, progress, ct)
-                : Settings.DefaultScanMode == "Quick"
-                    ? await FileScanner.ScanFilesAsync(SelectedFavoriteFolder.FullPath, false, progress, ct)
-                    : await FileScanner.ScanSmartForCleanupAsync(SelectedFavoriteFolder.FullPath, progress, ct);
-            if (!IsCurrentOperation(operationId, ct))
-                return;
-
-            ApplyLearnedRecommendations(files);
-            ReportOperation($"'{SelectedFavoriteFolder.Name}' 폴더 구조 정리 중...");
-            var cleanupRoot = await Task.Run(
-                () => BuildCleanupTree(SelectedFavoriteFolder.Name, SelectedFavoriteFolder.FullPath, files, ct),
-                ct);
-            if (!IsCurrentOperation(operationId, ct))
-                return;
-
-            ApplyScanResults(files, cleanupRoot);
-
-            var candidates = files
-                .Where(file => file.RiskScore < Settings.AutoSelectRiskThreshold && !file.IsInUse)
-                .ToList();
-            var added = 0;
-            var existingPaths = DeleteList
-                .Select(file => file.FilePath)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            PerformSelectionInfoBatch(() =>
-            {
-                PerformDeleteListBatch(() =>
-                {
-                    foreach (var file in candidates)
-                    {
-                        file.IsSelected = true;
-                        if (!existingPaths.Add(file.FilePath))
-                            continue;
-
-                        DeleteList.Add(file);
-                        added++;
-                    }
-                });
-            });
-
-            StatusMessage = $"자동 수집 완료: 후보 {candidates.Count}개 중 {added}개를 삭제 목록에 추가";
-        }
-        catch (OperationCanceledException)
-        {
-            StatusMessage = "자동 수집이 취소되었습니다.";
-        }
-        catch (Exception ex)
-        {
-            ErrorLogService.LogException("Auto Collect", ex);
-            StatusMessage = $"자동 수집 실패: {ex.Message}";
-        }
-        finally
-        {
-            EndBusy(operationId);
-        }
     }
 
     private void ClearDeleteList()
